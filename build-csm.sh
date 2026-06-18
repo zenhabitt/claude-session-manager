@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build Claude Code Session Manager as a macOS .app bundle
-# Usage: bash build_app.sh [--dmg]
+# Usage: bash build-csm.sh [--dmg]
 # Output: Claude Session Manager.app (and optionally .dmg)
 
 set -e
