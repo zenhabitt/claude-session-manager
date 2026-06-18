@@ -28,7 +28,7 @@ Lightweight macOS GUI for managing Claude Code chat sessions — browse, preview
 
 ```bash
 # Clone and run
-git clone https://github.com/YOUR_USERNAME/claude-session-manager.git
+git clone https://github.com/zenhabitt/claude-session-manager.git
 cd claude-session-manager
 python3 server.py
 ```
