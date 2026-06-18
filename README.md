@@ -38,7 +38,7 @@ Opens http://localhost:8742 in your browser.
 ## Build macOS App
 
 ```bash
-bash build_app.sh --dmg
+bash build-csm.sh --dmg
 ```
 
 Outputs `build/Claude Session Manager.app` and `build/Claude Session Manager.dmg`.
@@ -51,7 +51,7 @@ Outputs `build/Claude Session Manager.app` and `build/Claude Session Manager.dmg
 
 ### From source
 ```bash
-bash build_app.sh --dmg
+bash build-csm.sh --dmg
 cp -R "build/Claude Session Manager.app" /Applications/
 ```
 
@@ -59,7 +59,7 @@ cp -R "build/Claude Session Manager.app" /Applications/
 
 Drag the app to Trash, or:
 ```bash
-bash uninstall.sh
+bash uninstall-csm.sh
 ```
 
 ## How It Works
@@ -76,8 +76,8 @@ All data stays local. No network requests, no telemetry.
 ```
 claude-session-manager/
 ├── server.py          # Main application (backend + frontend)
-├── build_app.sh       # macOS .app & .dmg build script
-├── uninstall.sh       # Cleanup script
+├── build-csm.sh       # macOS .app & .dmg build script
+├── uninstall-csm.sh   # Cleanup script
 ├── .gitignore
 ├── LICENSE
 └── README.md
