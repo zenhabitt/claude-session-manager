@@ -107,7 +107,21 @@ class SessionManager:
             )
             sessions.append(info)
 
-        # Active sessions first, then by mtime
+        # Sort by mtime descending first
+        sessions.sort(key=lambda s: -s["mtime"])
+
+        # When bare claude exists, only the single most-recent session is active (not already matched via --resume)
+        if bare_count > 0:
+            for s in sessions:
+                if s["active"] and s["id"] not in resumed_ids:
+                    s["active"] = False
+            # Mark the most-recently-modified session as active (likely the bare claude session)
+            for s in sessions:
+                if s["id"] not in resumed_ids:
+                    s["active"] = True
+                    break
+
+        # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
         return sessions
 
