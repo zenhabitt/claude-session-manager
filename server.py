@@ -47,7 +47,7 @@ class SessionManager:
         if not projects_dir.exists():
             return sessions
 
-        for jsonl_file in projects_dir.glob("**/*.jsonl"):
+        for jsonl_file in projects_dir.glob("*/*.jsonl"):
             session_id = jsonl_file.stem
             project_dir = jsonl_file.parent.name if jsonl_file.parent != projects_dir else "(root)"
             project_name = SessionManager._decode_project(project_dir)
