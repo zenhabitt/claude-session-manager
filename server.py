@@ -144,6 +144,7 @@ class SessionManager:
 
     @staticmethod
     def get_preview(filepath, max_messages=40):
+        """Return structured conversation preview with typed content parts."""
         messages = []
         with open(filepath, "r", encoding="utf-8") as f:
             for line in f:
@@ -154,49 +155,63 @@ class SessionManager:
 
                 t = d.get("type", "")
                 role = None
-                content = ""
+                parts = []
 
                 if t == "user":
                     c = d.get("message", {}).get("content", "")
                     if isinstance(c, str):
                         if c.strip().startswith("<"):
                             continue
-                        content = c
+                        parts = [{"type": "text", "content": c.strip()[:500]}]
                     elif isinstance(c, list):
                         for item in c:
                             if isinstance(item, dict):
                                 if item.get("type") == "text":
-                                    content = item["text"]
-                                    break
+                                    parts.append({"type": "text", "content": item["text"][:500]})
                                 elif item.get("type") == "tool_result":
-                                    content = f"[tool result: {str(item.get('content',''))[:100]}]"
-                                    break
-                    if content.strip():
+                                    result_text = str(item.get("content", ""))
+                                    is_error = item.get("is_error", False)
+                                    parts.append({
+                                        "type": "tool_result",
+                                        "content": result_text[:500],
+                                        "is_error": is_error
+                                    })
+                    if parts:
                         role = "user"
+
                 elif t == "assistant":
-                    parts = d.get("message", {}).get("content", [])
-                    texts = []
-                    for part in parts:
+                    raw_parts = d.get("message", {}).get("content", [])
+                    for part in raw_parts:
                         if not isinstance(part, dict):
                             continue
                         pt = part.get("type", "")
                         if pt == "text":
-                            texts.append(part["text"])
+                            parts.append({"type": "text", "content": part["text"]})
                         elif pt == "thinking":
-                            texts.append("[thinking]")
+                            parts.append({"type": "thinking", "content": part.get("thinking", "")[:300]})
                         elif pt == "tool_use":
-                            texts.append(f"[tool: {part.get('name', '?')}]")
-                    content = "\n".join(texts)
-                    if content.strip():
+                            inp = part.get("input", {})
+                            # Simplify tool input for display
+                            inp_simple = {}
+                            for k, v in inp.items():
+                                if isinstance(v, str) and len(v) > 200:
+                                    inp_simple[k] = v[:197] + "..."
+                                else:
+                                    inp_simple[k] = v
+                            parts.append({
+                                "type": "tool_use",
+                                "name": part.get("name", "?"),
+                                "input": json.dumps(inp_simple, ensure_ascii=False, indent=2)
+                            })
+                    if parts:
                         role = "assistant"
-                elif t == "ai-title":
-                    role = "title"
-                    content = d.get("aiTitle", "")
 
-                if role and content:
-                    if len(content) > 500:
-                        content = content[:497] + "..."
-                    messages.append({"role": role, "content": content.strip()})
+                elif t == "ai-title":
+                    parts = [{"type": "title", "content": d.get("aiTitle", "")}]
+                    role = "title"
+
+                if role and parts:
+                    messages.append({"role": role, "parts": parts})
 
                 if len(messages) >= max_messages * 2:
                     break
@@ -657,10 +672,35 @@ FRONTEND = r"""<!DOCTYPE html>
   .msg.user { background: var(--surface); border-left: 2px solid var(--accent); }
   .msg.assistant { background: var(--surface); border-left: 2px solid var(--success); }
   .msg.title { background: transparent; border-left: 2px solid var(--text-dim); font-style: italic; color: var(--text-dim); font-size: 11px; }
-  .msg .role-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .msg .role-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
   .msg.user .role-label { color: var(--accent); }
   .msg.assistant .role-label { color: var(--success); }
   .msg.title .role-label { color: var(--text-dim); }
+
+  /* ── Content part types (terminal-like) ── */
+  .part-text { color: var(--text); }
+  .part-text p { margin: 0 0 4px; }
+  .part-text h2, .part-text h3, .part-text h4 { color: var(--text-bright); margin: 8px 0 4px; font-size: 13px; }
+  .part-text strong { color: var(--text-bright); }
+  .part-text code { background: var(--surface2); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 11px; color: var(--accent); }
+  .part-text pre { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 8px; overflow-x: auto; font-family: var(--mono); font-size: 11px; margin: 4px 0; }
+  .part-text a { color: var(--accent); }
+  .part-text table { border-collapse: collapse; margin: 4px 0; font-size: 11px; }
+  .part-text th, .part-text td { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
+  .part-text th { background: var(--surface2); color: var(--text-bright); }
+  .part-text hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+  .part-text blockquote { border-left: 2px solid var(--text-dim); padding-left: 8px; color: var(--text-dim); margin: 4px 0; }
+
+  .part-thinking { margin: 2px 0; }
+  .part-thinking summary { cursor: pointer; color: #b0a0d0; font-size: 10px; font-weight: 500; user-select: none; opacity: 0.7; }
+  .part-thinking summary:hover { opacity: 1; }
+  .part-thinking .thinking-content { color: #a098c0; font-style: italic; font-size: 11px; padding: 4px 8px; border-left: 2px solid #6a5acd; margin-top: 2px; }
+
+  .part-tool { background: rgba(108,138,255,0.06); border: 1px solid rgba(108,138,255,0.15); border-radius: 4px; padding: 6px 10px; margin: 4px 0; font-family: var(--mono); font-size: 11px; }
+  .part-tool .tool-name { color: var(--accent); font-weight: 600; }
+  .part-tool .tool-input { color: var(--text-dim); margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
+  .part-tool-result { background: rgba(108,138,255,0.04); border: 1px solid rgba(108,138,255,0.1); border-radius: 4px; padding: 4px 10px; margin: 2px 0; font-size: 11px; color: var(--text-dim); max-height: 80px; overflow-y: auto; }
+  .part-tool-result.error { border-color: rgba(255,107,107,0.2); color: var(--danger); }
 
   /* ── Modal ── */
   .modal-overlay {
@@ -951,6 +991,33 @@ function esc(str) {
   return div.innerHTML;
 }
 
+function renderParts(parts) {
+  if (!parts || parts.length === 0) return '';
+  return parts.map(p => {
+    switch (p.type) {
+      case 'text':
+        return `<div class="part-text">${renderMarkdown(p.content)}</div>`;
+      case 'thinking':
+        const thinkId = 'think-' + Math.random().toString(36).slice(2,8);
+        return `<details class="part-thinking">
+          <summary>💭 Thinking</summary>
+          <div class="thinking-content">${esc(p.content)}</div>
+        </details>`;
+      case 'tool_use':
+        return `<div class="part-tool">
+          <div class="tool-name">⚙ ${esc(p.name)}</div>
+          ${p.input ? `<div class="tool-input">${esc(p.input)}</div>` : ''}
+        </div>`;
+      case 'tool_result':
+        return `<div class="part-tool-result${p.is_error ? ' error' : ''}">${esc(p.content)}</div>`;
+      case 'title':
+        return `<em>${esc(p.content)}</em>`;
+      default:
+        return esc(String(p.content || ''));
+    }
+  }).join('');
+}
+
 function renderMarkdown(str) {
   // First HTML-escape to prevent XSS
   const escaped = esc(str);
@@ -1029,7 +1096,7 @@ async function selectSession(id) {
     preview.innerHTML = msgs.map(m => `
       <div class="msg ${m.role}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
-        <div>${renderMarkdown(m.content)}</div>
+        ${renderParts(m.parts || [])}
       </div>
     `).join('');
   } catch (e) {
