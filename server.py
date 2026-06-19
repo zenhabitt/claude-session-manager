@@ -1016,8 +1016,6 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
   document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
 
-  // Show/hide sort bar (only for sessions list)
-  document.getElementById('sort-bar').style.display = tab === 'list' ? 'flex' : 'none';
 
   // Reload data
   reloadData().then(() => {
