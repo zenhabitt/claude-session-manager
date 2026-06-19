@@ -184,47 +184,18 @@ ensure_min_lifetime() {
 
 # ── Case 1: Server already running → focus browser, wait, exit ──
 if curl -s --max-time 2 "$URL" > /dev/null 2>&1; then
-    # Bring existing browser tab to front — don't open a new tab
-    osascript -e "
-      tell application \"System Events\"
-        set browserList to {\"Google Chrome\", \"Safari\", \"Arc\", \"Brave Browser\", \"Microsoft Edge\"}
-        repeat with browserName in browserList
-          if exists application browserName then
-            tell application browserName
-              activate
-              -- Try to focus the tab showing our URL
-              try
-                if browserName is \"Google Chrome\" or browserName is \"Brave Browser\" or browserName is \"Microsoft Edge\" or browserName is \"Arc\" then
-                  set winCount to count of windows
-                  repeat with i from 1 to winCount
-                    set tabCount to count of tabs of window i
-                    repeat with j from 1 to tabCount
-                      if URL of tab j of window i starts with \"$URL\" then
-                        set active tab index of window i to j
-                        set index of window i to 1
-                        return
-                      end if
-                    end repeat
-                  end repeat
-                end if
-                if browserName is \"Safari\" then
-                  repeat with w in windows
-                    repeat with t in tabs of w
-                      if URL of t starts with \"$URL\" then
-                        set current tab of w to t
-                        set index of w to 1
-                        return
-                      end if
-                    end repeat
-                  end repeat
-                end if
-              end try
-            end tell
+    # Bring browser to front — activates the last-used window (our session manager tab)
+    osascript -e '
+      tell application "System Events"
+        set browsers to {"Google Chrome", "Safari", "Arc", "Brave Browser", "Microsoft Edge"}
+        repeat with b in browsers
+          if exists application b then
+            tell application b to activate
             exit repeat
           end if
         end repeat
       end tell
-    " 2>/dev/null
+    ' 2>/dev/null
     ensure_min_lifetime
     exit 0
 fi

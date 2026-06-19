@@ -1419,6 +1419,20 @@ async function resumeSession(id) {
     const res = await api(`/api/sessions/${id}/resume`, 'POST');
     if (res.success) {
       toast(t('resumed'), 'success');
+      // Immediately mark active + re-render detail with Stop button
+      const s = sessions.find(s => s.id === id);
+      if (s) s.active = true;
+      renderList();
+      if (selectedId === id) selectSession(id);
+      // Full server refresh after 2s for accuracy
+      setTimeout(async () => {
+        sessions = await api('/api/sessions');
+        trashItems = await api('/api/trash');
+        document.getElementById('session-count').textContent = sessions.length;
+        updateTrashBadge();
+        renderList();
+        if (selectedId) selectSession(selectedId);
+      }, 2000);
     } else {
       toast(res.message || 'Failed', 'error');
     }
@@ -1774,8 +1788,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                                     for cl in cwd_r.stdout.split("\n"):
                                         if cl.startswith("n"):
                                             pdir = "-" + cl[1:].lstrip("/").replace("/", "-")
-                                            if pdir == proj:
+                                            if pdir == proj and pid not in target_pids:
                                                 target_pids.append(pid)
+                                                break  # one bare process per session
                                 except Exception:
                                     pass
                 if not target_pids:
