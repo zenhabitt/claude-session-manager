@@ -889,7 +889,7 @@ async function init() {
   updateTrashBadge();
   applyLang();
 
-  // Auto-refresh every 15s to keep active indicators accurate
+  // Auto-refresh every 2s to keep active indicators accurate
   setInterval(async () => {
     const newSessions = await api('/api/sessions');
     const newTrash = await api('/api/trash');
@@ -902,7 +902,7 @@ async function init() {
       updateTrashBadge();
       renderList();
     }
-  }, 15000);
+  }, 2000);
 }
 init();
 
