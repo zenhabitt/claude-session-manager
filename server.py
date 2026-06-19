@@ -1748,7 +1748,38 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                     target_pids.append(pid)
 
             if not target_pids:
-                return self._json({"success": False, "message": "No --resume process for this session"})
+                # Check if this is a bare claude session — kill by project dir match
+                sessions = SessionManager.list_all()
+                session_data = next((s for s in sessions if s["id"] == session_id), None)
+                if session_data and session_data.get("active"):
+                    proj = session_data.get("project_dir", "")
+                    if proj:
+                        for line in result.stdout.split("\n"):
+                            if "claude" not in line or "Session Manager" in line:
+                                continue
+                            if "vscode" in line or "claude-code" in line or "git" in line:
+                                continue
+                            parts = line.split(None, 1)
+                            if len(parts) < 2:
+                                continue
+                            pid, cmd = parts
+                            # Kill bare claude processes in the same project
+                            if not re.search(r"(?:--resume|-r)\s+[a-f0-9-]{36}", cmd) \
+                               and re.search(r"\bclaude\b", cmd):
+                                try:
+                                    cwd_r = subprocess.run(
+                                        ["lsof", "-a", "-p", pid, "-d", "cwd", "-F", "n"],
+                                        capture_output=True, text=True, timeout=2
+                                    )
+                                    for cl in cwd_r.stdout.split("\n"):
+                                        if cl.startswith("n"):
+                                            pdir = "-" + cl[1:].lstrip("/").replace("/", "-")
+                                            if pdir == proj:
+                                                target_pids.append(pid)
+                                except Exception:
+                                    pass
+                if not target_pids:
+                    return self._json({"success": False, "message": "No matching process found"})
 
             # SIGTERM for graceful shutdown
             for pid in target_pids:
