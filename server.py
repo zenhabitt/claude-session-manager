@@ -105,8 +105,9 @@ class SessionManager:
         # Sort by mtime descending first
         sessions.sort(key=lambda s: -s["mtime"])
 
-        # When bare claude exists AND no resumed session matched, mark the most-recent session as active
-        if bare_count > 0 and not resumed_ids:
+        # When bare claude exists (e.g. "claude" or "claude -r" without explicit ID),
+        # mark the most-recent non-resumed session as active
+        if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
