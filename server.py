@@ -705,7 +705,8 @@ FRONTEND = r"""<!DOCTYPE html>
     cursor: pointer; font-family: var(--font); transition: all .12s; white-space: nowrap;
   }
   .card-btn:hover { color: var(--text); border-color: var(--text-dim); }
-  .card-btn.danger:hover { background: var(--danger-bg); color: var(--danger); border-color: var(--danger); }
+  .card-btn.danger { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
+  .card-btn.danger:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
   .card-btn.restore:hover { background: rgba(105,219,124,0.08); color: var(--success); border-color: var(--success); }
 
   /* ── Right Panel ── */
