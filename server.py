@@ -639,6 +639,14 @@ FRONTEND = r"""<!DOCTYPE html>
   .sort-bar button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
   .session-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+  .section-header {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.8px; color: var(--success); padding: 8px 12px 4px;
+    user-select: none;
+  }
+  .section-divider {
+    border-top: 1px solid var(--border); margin: 6px 12px 10px;
+  }
   .session-list::-webkit-scrollbar { width: 5px; }
   .session-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
@@ -1039,11 +1047,18 @@ function renderList() {
         || (s.model || '').toLowerCase().includes(query);
     });
 
-    if (sortBy === 'time') filtered.sort((a, b) => b.mtime - a.mtime);
-    else if (sortBy === 'size') filtered.sort((a, b) => b.size_bytes - a.size_bytes);
-    else if (sortBy === 'messages') filtered.sort((a, b) => b.messages - a.messages);
+    const actives = filtered.filter(s => s.active);
+    const inactives = filtered.filter(s => !s.active);
 
-    container.innerHTML = filtered.map(s => {
+    // Sort active sessions by mtime (latest first)
+    actives.sort((a, b) => b.mtime - a.mtime);
+
+    // Sort inactive sessions by user's choice
+    if (sortBy === 'time') inactives.sort((a, b) => b.mtime - a.mtime);
+    else if (sortBy === 'size') inactives.sort((a, b) => b.size_bytes - a.size_bytes);
+    else if (sortBy === 'messages') inactives.sort((a, b) => b.messages - a.messages);
+
+    const renderCard = (s) => {
       const sel = s.id === selectedId ? ' selected' : '';
       const act = s.active ? ' active' : '';
       const dot = s.active ? '<span class="active-dot"></span>' : '';
@@ -1057,7 +1072,16 @@ function renderList() {
           <button class="card-btn danger" onclick="event.stopPropagation(); askDeleteSession('${s.id}')">&#x2715; ${t('delete')}</button>
         </div>
       </div>`;
-    }).join('');
+    };
+
+    let html = '';
+    if (actives.length > 0) {
+      html += `<div class="section-header">🟢 Running</div>`;
+      html += actives.map(renderCard).join('');
+      html += `<div class="section-divider"></div>`;
+    }
+    html += inactives.map(renderCard).join('');
+    container.innerHTML = html;
 
   } else {
     // Trash tab
