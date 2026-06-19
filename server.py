@@ -1701,7 +1701,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
 
     def _stop_session(self, session_id):
-        """Kill the running claude process for a given session."""
+        """Kill the running claude process and close its Terminal window."""
         import subprocess, re
         try:
             result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
@@ -1712,13 +1712,27 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 # Match claude --resume <id> or claude -r
                 m = re.search(r"claude\s.*(?:--resume|-r)\s+([a-f0-9-]{36})", line)
                 if m and m.group(1) == session_id:
-                    # Extract PID (second column in ps aux)
                     parts = line.split()
                     if len(parts) > 1:
                         pid = parts[1]
                         subprocess.run(["kill", pid], capture_output=True)
                         killed += 1
             if killed > 0:
+                # Also close the Terminal window via AppleScript
+                close_script = f'''
+                    tell application "Terminal"
+                        repeat with w in windows
+                            repeat with t in tabs of w
+                                if name of t contains "{session_id}" then
+                                    close w
+                                    exit repeat
+                                end if
+                            end repeat
+                        end repeat
+                    end tell
+                '''
+                subprocess.run(["osascript", "-e", close_script],
+                               capture_output=True, timeout=3)
                 return self._json({"success": True, "message": f"Killed {killed} process(es)"})
             else:
                 return self._json({"success": False, "message": "No matching process found"})
