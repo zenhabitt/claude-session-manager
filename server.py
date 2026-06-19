@@ -46,31 +46,35 @@ class SessionManager:
 
     @staticmethod
     def _get_active_session_ids():
-        """Find session IDs that have a running claude --resume process."""
+        """Find session IDs that have a running claude process.
+        Returns (resumed_ids, has_bare_claude) tuple.
+        """
         now = time.time()
         if now - SessionManager._active_ids_time < 1:
-            return SessionManager._active_ids_cache  # cache for 1s
+            return SessionManager._active_ids_cache  # cached
 
         ids = set()
+        bare_count = 0
         try:
             result = subprocess.run(
                 ["ps", "aux"], capture_output=True, text=True, timeout=3
             )
+            import re
             for line in result.stdout.split("\n"):
-                if "claude" not in line:
+                if "claude" not in line or "Session Manager" in line or "server.py" in line:
                     continue
-                # Match: claude --resume <session-id>  or  claude -r <session-id>
-                # Also: claude -r (resume latest, no explicit ID)
-                import re
+                # Match: claude --resume <id> or claude -r <id>
                 m = re.search(r"claude\s+(?:--resume|-r)\s+([a-f0-9-]{36})", line)
                 if m:
                     ids.add(m.group(1))
+                elif re.search(r"\bclaude\b", line) and "claude-code" not in line:
+                    bare_count += 1
         except Exception:
             pass
 
-        SessionManager._active_ids_cache = ids
+        SessionManager._active_ids_cache = (ids, bare_count)
         SessionManager._active_ids_time = now
-        return ids
+        return (ids, bare_count)
 
     @staticmethod
     def list_all():
@@ -93,9 +97,14 @@ class SessionManager:
             info["size"] = SessionManager._format_size(stat.st_size)
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
-            # Active: running claude process OR modified in last 2 min
-            active_ids = SessionManager._get_active_session_ids()
-            info["active"] = session_id in active_ids or (time.time() - stat.st_mtime) < 120
+            # Active: claude --resume <id> match, or bare claude + recent mtime, or very recent writes
+            resumed_ids, bare_count = SessionManager._get_active_session_ids()
+            age = time.time() - stat.st_mtime
+            info["active"] = (
+                session_id in resumed_ids or
+                (bare_count > 0 and age < 300) or  # new session, idle up to 5 min
+                age < 120  # actively being written
+            )
             sessions.append(info)
 
         # Active sessions first, then by mtime
