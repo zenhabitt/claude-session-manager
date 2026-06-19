@@ -228,7 +228,7 @@ class SessionManager:
         }
 
     @staticmethod
-    def get_preview(filepath, max_messages=40):
+    def get_preview(filepath, max_messages=200):
         """Return structured conversation preview with typed content parts."""
         messages = []
         with open(filepath, "r", encoding="utf-8") as f:
