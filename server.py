@@ -889,18 +889,24 @@ async function init() {
   updateTrashBadge();
   applyLang();
 
-  // Auto-refresh every 2s to keep active indicators accurate
+  // Auto-refresh every 2s: session list + current detail view
   setInterval(async () => {
     const newSessions = await api('/api/sessions');
     const newTrash = await api('/api/trash');
-    // Only re-render if data changed
-    if (JSON.stringify(newSessions) !== JSON.stringify(sessions) ||
-        JSON.stringify(newTrash) !== JSON.stringify(trashItems)) {
+    const changed = JSON.stringify(newSessions) !== JSON.stringify(sessions) ||
+                    JSON.stringify(newTrash) !== JSON.stringify(trashItems);
+    if (changed) {
       sessions = newSessions;
       trashItems = newTrash;
       document.getElementById('session-count').textContent = sessions.length;
       updateTrashBadge();
       renderList();
+    }
+    // Also refresh current detail panel if one is open
+    if (selectedId && currentTab === 'list') {
+      selectSession(selectedId);
+    } else if (selectedId && currentTab === 'trash') {
+      selectTrashItem(selectedId);
     }
   }, 2000);
 }
