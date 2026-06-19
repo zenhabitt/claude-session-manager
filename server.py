@@ -105,16 +105,19 @@ class SessionManager:
         # Sort by mtime descending first
         sessions.sort(key=lambda s: -s["mtime"])
 
-        # When bare claude exists (e.g. "claude" or "claude -r" without explicit ID),
-        # mark the most-recent non-resumed session as active
+        # Each bare claude process (no explicit --resume <id>) matches the most-recent
+        # non-resumed sessions, in order. E.g. 2 bare processes → top 2 non-resumed active.
         if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
+            n = 0
             for s in sessions:
                 if s["id"] not in resumed_ids:
                     s["active"] = True
-                    break
+                    n += 1
+                    if n >= bare_count:
+                        break
 
         # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
