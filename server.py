@@ -902,13 +902,9 @@ async function init() {
       updateTrashBadge();
       renderList();
     }
-    // Also refresh current detail panel if one is open (preserve scroll)
+    // Also refresh current detail panel if one is open (append-only, no flash)
     if (selectedId && currentTab === 'list') {
-      const previewEl = document.getElementById('conversation-preview');
-      const scrollTop = previewEl ? previewEl.scrollTop : 0;
-      await selectSession(selectedId);
-      const newPreview = document.getElementById('conversation-preview');
-      if (newPreview) newPreview.scrollTop = scrollTop;
+      refreshPreview(selectedId);
     } else if (selectedId && currentTab === 'trash') {
       selectTrashItem(selectedId);
     }
@@ -1169,6 +1165,28 @@ async function selectSession(id) {
   } catch (e) {
     document.getElementById('conversation-preview').innerHTML = `<p style="color:var(--danger);padding:20px">${t('loadFailed')}</p>`;
   }
+}
+
+async function refreshPreview(id) {
+  const container = document.getElementById('conversation-preview');
+  if (!container) return;
+  try {
+    const msgs = await api(`/api/sessions/${id}/preview`);
+    if (!msgs || msgs.length === 0) return;
+    // Only append new messages — avoid rebuilding entire DOM
+    const existingCount = container.querySelectorAll('.msg').length;
+    if (msgs.length <= existingCount) return; // nothing new
+    const newMsgs = msgs.slice(existingCount);
+    const scrollAtBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 40;
+    container.insertAdjacentHTML('beforeend', newMsgs.map(m => `
+      <div class="msg ${m.role}">
+        <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
+        ${renderParts(m.parts || [])}
+      </div>
+    `).join(''));
+    // Auto-scroll only if already at bottom
+    if (scrollAtBottom) container.scrollTop = container.scrollHeight;
+  } catch (e) {}
 }
 
 function updateSessionDetail() {
