@@ -95,8 +95,8 @@ class SessionManager:
                 for cl in cwd_r.stdout.split("\n"):
                     if cl.startswith("n"):
                         cwd = cl[1:]
-                        # Encode as Claude project directory name
-                        proj_dir = cwd.lstrip("/").replace("/", "-")
+                        # Encode as Claude project directory name: /Users/x → -Users-x
+                        proj_dir = "-" + cwd.lstrip("/").replace("/", "-")
                         bare_dirs.add(proj_dir)
             except Exception:
                 pass
