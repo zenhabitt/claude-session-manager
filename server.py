@@ -728,6 +728,15 @@ FRONTEND = r"""<!DOCTYPE html>
     font-size: 16px; font-weight: 600; color: var(--text-bright);
     margin-bottom: 10px; word-break: break-word;
   }
+  .info-details { cursor: default; }
+  .info-summary {
+    font-size: 16px; font-weight: 600; color: var(--text-bright);
+    cursor: pointer; user-select: none; outline: none;
+    margin-bottom: 10px; word-break: break-word;
+  }
+  .info-summary::-webkit-details-marker { display: none; }
+  .info-summary::before { content: '▸ '; font-size: 12px; color: var(--text-dim); margin-right: 4px; }
+  .info-details[open] .info-summary::before { content: '▾ '; }
   .info-grid {
     display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px;
   }
@@ -1214,8 +1223,9 @@ async function selectSession(id) {
   panel.innerHTML = `
     <div class="detail">
       <div class="detail-header">
-        <div class="session-title">${esc(s.title)}</div>
-        <div class="info-grid">
+        <details class="info-details">
+          <summary class="info-summary">${esc(s.title)}</summary>
+          <div class="info-grid">
           <span class="label">${t('sessionId')}</span><span class="value">${s.id}</span>
           <span class="label">${t('project')}</span><span class="value">${esc(s.project)}</span>
           <span class="label">${t('branch')}</span><span class="value">${s.branch || '—'}</span>
@@ -1229,6 +1239,7 @@ async function selectSession(id) {
           ${s.active ? '' : `<button class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
           <button class="btn btn-danger" id="detail-delete-btn" onclick="askDeleteSession('${s.id}')">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
         </div>
+        </details>
       </div>
       <div class="conversation-preview" id="conversation-preview">${t('loading')}</div>
     </div>
