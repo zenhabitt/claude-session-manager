@@ -43,7 +43,7 @@ class SessionManager:
 
     _active_ids_cache = (set(), 0)
     _active_ids_time = 0
-    _stopped_sessions = {}  # session_id -> mtime_at_stop
+    _stopped_sessions = set()  # permanently excluded session IDs
 
     @staticmethod
     def _get_active_session_ids():
@@ -110,26 +110,18 @@ class SessionManager:
             except Exception:
                 pass
 
-        _log(f"─── poll resumed={resumed_ids} bare={bare_count} stopped={list(SessionManager._stopped_sessions.keys())}")
+        _log(f"─── poll resumed={resumed_ids} bare={bare_count} stopped={list(SessionManager._stopped_sessions)}")
 
         # Sort by mtime descending first
         sessions.sort(key=lambda s: -s["mtime"])
 
         # Bare claude: each bare process activates the most-recent non-resumed session.
-        # Exclude sessions stopped by user, unless their mtime changed (meaning resumed again).
+        # Exclude sessions stopped by user (permanent until server restart or user resumes).
         if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
-            # Lift exclusion for sessions whose mtime changed since stop (user resumed them)
-            for sid, stop_mtime in list(SessionManager._stopped_sessions.items()):
-                for s in sessions:
-                    if s["id"] == sid and s["mtime"] != stop_mtime:
-                        _log(f"  UNSTOP {sid[:8]} mtime changed {stop_mtime} -> {s['mtime']}")
-                        del SessionManager._stopped_sessions[sid]
-                        break
-            # Log each candidate
             for s in sessions[:5]:
                 stopped = s["id"] in SessionManager._stopped_sessions
                 _log(f"  candidate {s['id'][:8]} mtime={s['mtime']} age={time.time()-s['mtime']:.1f}s stopped={stopped} title={s['title'][:30]}")
@@ -1751,16 +1743,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             if not target_pids:
                 return self._json({"success": False, "message": "No --resume process for this session"})
 
-            # Record as stopped
-            for s in SessionManager.list_all():
-                if s["id"] == session_id:
-                    SessionManager._stopped_sessions[session_id] = s["mtime"]
-                    break
-            else:
-                SessionManager._stopped_sessions[session_id] = time.time()
+            # Permanent exclusion (until server restart)
+            SessionManager._stopped_sessions.add(session_id)
             try:
                 with open("/tmp/csm-active-debug.log", "a") as lf:
-                    lf.write(f"{__import__('time').strftime('%H:%M:%S')} STOP {session_id[:8]} mtime={SessionManager._stopped_sessions.get(session_id)}\n")
+                    lf.write(f"{__import__('time').strftime('%H:%M:%S')} STOP {session_id[:8]}\n")
             except: pass
 
             # SIGTERM for graceful shutdown
