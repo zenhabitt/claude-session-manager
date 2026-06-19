@@ -56,13 +56,17 @@ class SessionManager:
             info["id"] = session_id
             info["project"] = project_name
             info["filepath"] = str(jsonl_file)
-            info["size_bytes"] = jsonl_file.stat().st_size
-            info["size"] = SessionManager._format_size(jsonl_file.stat().st_size)
-            info["mtime"] = jsonl_file.stat().st_mtime
-            info["date"] = SessionManager._format_time(jsonl_file.stat().st_mtime)
+            stat = jsonl_file.stat()
+            info["size_bytes"] = stat.st_size
+            info["size"] = SessionManager._format_size(stat.st_size)
+            info["mtime"] = stat.st_mtime
+            info["date"] = SessionManager._format_time(stat.st_mtime)
+            # Active if modified in last 5 minutes
+            info["active"] = (time.time() - stat.st_mtime) < 300
             sessions.append(info)
 
-        sessions.sort(key=lambda s: s["mtime"], reverse=True)
+        # Active sessions first, then by mtime
+        sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
         return sessions
 
     @staticmethod
@@ -591,6 +595,23 @@ FRONTEND = r"""<!DOCTYPE html>
   }
   .session-card:hover { background: var(--surface2); }
   .session-card.selected { background: var(--surface2); border-color: var(--accent); }
+  .session-card.active {
+    border-color: rgba(105,219,124,0.25);
+    animation: breathe 2.5s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { box-shadow: 0 0 0 rgba(105,219,124,0); }
+    50% { box-shadow: 0 0 8px rgba(105,219,124,0.15); }
+  }
+  .session-card .active-dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--success); margin-right: 4px; vertical-align: middle;
+    animation: breathe-dot 1.5s ease-in-out infinite;
+  }
+  @keyframes breathe-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
   .session-card .title {
     font-size: 13px; font-weight: 500; color: var(--text-bright);
     margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -949,8 +970,10 @@ function renderList() {
 
     container.innerHTML = filtered.map(s => {
       const sel = s.id === selectedId ? ' selected' : '';
-      return `<div class="session-card${sel}" data-id="${s.id}" onclick="selectSession('${s.id}')">
-        <div class="title">${esc(s.title)}</div>
+      const act = s.active ? ' active' : '';
+      const dot = s.active ? '<span class="active-dot"></span>' : '';
+      return `<div class="session-card${sel}${act}" data-id="${s.id}" onclick="selectSession('${s.id}')">
+        <div class="title">${dot}${esc(s.title)}</div>
         <div class="meta">
           <span>${s.date}</span><span>${s.messages} msgs</span><span>${s.size}</span>
           <span class="project-tag">${esc(s.project)}</span>
