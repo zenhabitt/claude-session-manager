@@ -1337,7 +1337,7 @@ async function refreshPreview(id) {
     `).join(''));
     // Auto-scroll only if already at bottom
     if (scrollAtBottom) container.scrollTop = container.scrollHeight;
-  } catch (e) {}
+  } catch (e) { console.error('refreshPreview failed:', e); }
 }
 
 function updateSessionDetail() {
@@ -1758,9 +1758,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json({"success": False, "message": str(e)})
 
     def _find_session_path(self, session_id):
-        for s in SessionManager.list_all():
-            if s["id"] == session_id:
-                return s["filepath"]
+        for f in Path(CLAUDE_PROJECTS_DIR).glob(f"*/{session_id}.jsonl"):
+            return str(f)
         return None
 
 
