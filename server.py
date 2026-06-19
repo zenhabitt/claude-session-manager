@@ -60,14 +60,31 @@ class SessionManager:
             result = subprocess.run(
                 ["ps", "aux"], capture_output=True, text=True, timeout=3
             )
+            # ── Detailed Process Scan Log ──
+            with open("/tmp/csm-active-debug.log", "a") as lf:
+                lf.write(f"[PS_SCAN] {time.strftime('%H:%M:%S')}\n")
             for line in result.stdout.split("\n"):
                 if "claude" not in line or "Session Manager" in line or "server.py" in line:
                     continue
+                if "vscode" in line or "claude-code" in line or "shell-snapshot" in line:
+                    continue
+                # Extract PID + command portion
+                pid_match = re.match(r'\S+\s+(\d+)\s+.*', line)
+                pid = pid_match.group(1) if pid_match else '?'
+                cmd_short = line[80:200].strip() if len(line) > 80 else line.strip()
+                with open("/tmp/csm-active-debug.log", "a") as lf:
+                    lf.write(f"  pid={pid} cmd={cmd_short}\n")
                 m = re.search(r"claude\s+(?:--resume|-r)\s+([a-f0-9-]{36})", line)
                 if m:
                     ids.add(m.group(1))
-                elif re.search(r"\bclaude\b", line) and "claude-code" not in line:
+                    with open("/tmp/csm-active-debug.log", "a") as lf:
+                        lf.write(f"    → RESUMED: {m.group(1)}\n")
+                elif re.search(r"\bclaude\b", line):
                     bare_count += 1
+                    with open("/tmp/csm-active-debug.log", "a") as lf:
+                        lf.write(f"    → BARE (#{bare_count})\n")
+            with open("/tmp/csm-active-debug.log", "a") as lf:
+                lf.write(f"[PS_SCAN_END] resumed={ids} bare={bare_count}\n\n")
         except Exception:
             pass
 
@@ -109,27 +126,35 @@ class SessionManager:
             except Exception:
                 pass
 
-        _log(f"─── poll resumed={resumed_ids} bare={bare_count}")
+        _log(f"─── SELECT resumed={resumed_ids} bare_count={bare_count} total={len(sessions)}")
+
+        # Log all sessions with mtime ages
+        sessions.sort(key=lambda s: -s["mtime"])
+        _log("  All sessions by mtime:")
+        for i, s in enumerate(sessions):
+            age = time.time() - s["mtime"]
+            tags = []
+            if s["id"] in resumed_ids: tags.append("RESUMED")
+            if s.get("active"): tags.append("ACTIVE")
+            tag = " [" + ",".join(tags) + "]" if tags else ""
+            _log(f"    {i+1}. {s['id'][:8]} age={age:.1f}s {s['title'][:30]}{tag}")
 
         # Bare claude: one bare process → one most-recent-by-mtime session.
-        # Running sessions are written continuously → mtime stays fresh.
-        # Stopped sessions age out naturally within seconds.
         if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
-            # Sort by mtime descending
-            sessions.sort(key=lambda s: -s["mtime"])
-            for s in sessions[:5]:
-                _log(f"  candidate {s['id'][:8]} age={time.time()-s['mtime']:.1f}s title={s['title'][:30]}")
             for s in sessions:
                 if s["id"] not in resumed_ids:
-                    _log(f"  → ACTIVATE {s['id'][:8]} {s['title'][:40]}")
+                    _log(f"  → ACTIVATE #{n+1}: {s['id'][:8]} age={time.time()-s['mtime']:.1f}s {s['title'][:40]}")
                     s["active"] = True
                     n += 1
                     if n >= bare_count:
                         break
+            _log(f"  Activated {n}/{bare_count} bare sessions")
+
+        _log(f"─── RESULT: active={[s['id'][:8] for s in sessions if s['active']]}\n")
 
         # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
