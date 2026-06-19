@@ -25,6 +25,8 @@ import threading
 import shutil
 import time
 import subprocess
+import re
+import datetime
 from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────
@@ -46,45 +48,35 @@ class SessionManager:
 
     @staticmethod
     def _get_active_session_ids():
-        """Returns (resumed_ids, bare_count, bare_project_dirs).
-        bare_project_dirs: set of Claude project dirnames matching bare process cwds.
-        """
+        """Returns (resumed_ids, bare_count, bare_project_dirs)."""
         now = time.time()
-        if now - SessionManager._active_ids_time < 0.5:
+        if now - SessionManager._active_ids_time < 1:
             return SessionManager._active_ids_cache
 
         ids = set()
         bare_pids = []
-        import re
         try:
             result = subprocess.run(
-                ["ps", "aux"], capture_output=True, text=True, timeout=3
+                ["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=3
             )
-            with open("/tmp/csm-active-debug.log", "a") as lf:
-                lf.write(f"[PS_SCAN] {time.strftime('%H:%M:%S')}\n")
             for line in result.stdout.split("\n"):
                 if "claude" not in line or "Session Manager" in line or "server.py" in line:
                     continue
-                if "vscode" in line or "claude-code" in line or "shell-snapshot" in line or "git" in line:
+                if any(x in line for x in ("vscode", "claude-code", "shell-snapshot", "git")):
                     continue
-                pid_match = re.match(r'\S+\s+(\d+)\s+.*', line)
-                pid = pid_match.group(1) if pid_match else '?'
-                cmd_short = line[80:200].strip() if len(line) > 80 else line.strip()
-                with open("/tmp/csm-active-debug.log", "a") as lf:
-                    lf.write(f"  pid={pid} cmd={cmd_short}\n")
-                m = re.search(r"claude\s+(?:--resume|-r)\s+([a-f0-9-]{36})", line)
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                pid, cmd = parts
+                m = re.search(r"claude\s+(?:--resume|-r)\s+([a-f0-9-]{36})", cmd)
                 if m:
                     ids.add(m.group(1))
-                    with open("/tmp/csm-active-debug.log", "a") as lf:
-                        lf.write(f"    → RESUMED: {m.group(1)}\n")
-                elif re.search(r"\bclaude\b", line):
+                elif re.search(r"\bclaude\b", cmd):
                     bare_pids.append(pid)
-                    with open("/tmp/csm-active-debug.log", "a") as lf:
-                        lf.write(f"    → BARE\n")
         except Exception:
             pass
 
-        # Get cwds for bare claude processes, convert to project dirnames
+        # Get cwds for bare claude processes
         bare_dirs = set()
         for pid in bare_pids:
             try:
@@ -94,20 +86,14 @@ class SessionManager:
                 )
                 for cl in cwd_r.stdout.split("\n"):
                     if cl.startswith("n"):
-                        cwd = cl[1:]
-                        # Encode as Claude project directory name: /Users/x → -Users-x
-                        proj_dir = "-" + cwd.lstrip("/").replace("/", "-")
+                        proj_dir = "-" + cl[1:].lstrip("/").replace("/", "-")
                         bare_dirs.add(proj_dir)
             except Exception:
                 pass
 
-        bare_count = len(bare_pids)
-        with open("/tmp/csm-active-debug.log", "a") as lf:
-            lf.write(f"[PS_SCAN_END] resumed={ids} bare={bare_count} bare_dirs={bare_dirs}\n\n")
-
-        SessionManager._active_ids_cache = (ids, bare_count, bare_dirs)
+        SessionManager._active_ids_cache = (ids, len(bare_pids), bare_dirs)
         SessionManager._active_ids_time = now
-        return (ids, bare_count, bare_dirs)
+        return SessionManager._active_ids_cache
 
     @staticmethod
     def list_all():
@@ -136,33 +122,10 @@ class SessionManager:
             info["active"] = session_id in resumed_ids
             sessions.append(info)
 
-        # ── Active Detection Log ──────────────────────────────────
-        def _log(msg):
-            try:
-                with open("/tmp/csm-active-debug.log", "a") as lf:
-                    lf.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
-            except Exception:
-                pass
+        # Sort by last message time (stable — not polluted by background file writes)
+        sessions.sort(key=lambda s: s.get("last_time") or "", reverse=True)
 
-        _log(f"─── SELECT resumed={resumed_ids} bare_count={bare_count} bare_dirs={bare_dirs} total={len(sessions)}")
-
-        # Sort by last message time (stable, not polluted by background writes)
-        def _sort_key(s):
-            lt = s.get("last_time", "")
-            return lt  # ISO 8601 string, lexicographic = chronological
-        sessions.sort(key=lambda s: (_sort_key(s) or ""), reverse=True)
-        _log("  All sessions by mtime:")
-        for i, s in enumerate(sessions):
-            age = time.time() - s["mtime"]
-            tags = []
-            if s["id"] in resumed_ids: tags.append("RESUMED")
-            if s.get("active"): tags.append("ACTIVE")
-            pd = s.get("project_dir", "?")
-            tag = " [" + ",".join(tags) + "]" if tags else ""
-            _log(f"    {i+1}. {s['id'][:8]} proj={pd} age={age:.1f}s {s['title'][:30]}{tag}")
-
-        # Bare claude: match by PROJECT DIRECTORY. Claude writes to all session files,
-        # so global mtime is unreliable. A process in ~/ matches sessions in project -Users-<name>.
+        # Bare claude: match by PROJECT DIRECTORY (not global mtime).
         if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
@@ -171,21 +134,17 @@ class SessionManager:
             if bare_dirs:
                 for s in sessions:
                     if s["id"] not in resumed_ids and s.get("project_dir", "") in bare_dirs:
-                        _log(f"  → ACTIVATE #{n+1}: {s['id'][:8]} proj={s.get('project_dir','')} {s['title'][:40]}")
                         s["active"] = True
                         bare_dirs.discard(s["project_dir"])
                         n += 1
+            # Fallback: if no project match, use most recent by last_time
             if n == 0:
                 for s in sessions:
                     if s["id"] not in resumed_ids:
-                        _log(f"  → ACTIVATE(fb) #{n+1}: {s['id'][:8]} {s['title'][:40]}")
                         s["active"] = True
                         n += 1
                         if n >= bare_count:
                             break
-            _log(f"  Activated {n}/{bare_count} bare sessions")
-
-        _log(f"─── RESULT: active={[s['id'][:8] for s in sessions if s['active']]}\n")
 
         # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
@@ -493,7 +452,6 @@ class SessionManager:
 
     @staticmethod
     def _format_time(ts):
-        import datetime
         dt = datetime.datetime.fromtimestamp(ts)
         now = datetime.datetime.now()
         diff = now - dt
@@ -1236,7 +1194,7 @@ function renderParts(parts) {
       case 'text':
         return `<div class="part-text">${renderMarkdown(p.content)}</div>`;
       case 'thinking':
-        const thinkId = 'think-' + Math.random().toString(36).slice(2,8);
+        const thinkId = 'think-' + (++window._thinkCounter || (window._thinkCounter = 1));
         return `<details class="part-thinking">
           <summary>💭 Thinking</summary>
           <div class="thinking-content">${esc(p.content)}</div>
@@ -1738,7 +1696,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 activate
             end tell
         '''
-        import subprocess
         try:
             subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
             return self._json({"success": True, "message": "Starting new session"})
@@ -1761,7 +1718,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 activate
             end tell
         '''
-        import subprocess
         try:
             subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
             return self._json({"success": True, "message": f"Resuming session {session_id}"})
@@ -1770,7 +1726,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def _stop_session(self, session_id):
         """Kill the claude process tied to this session (SIGTERM only)."""
-        import subprocess, re
         try:
             result = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=3)
             target_pids = []
