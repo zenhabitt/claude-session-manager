@@ -24,6 +24,7 @@ import urllib.parse
 import threading
 import shutil
 import time
+import subprocess
 from pathlib import Path
 
 # ── Config ────────────────────────────────────────────────────────────
@@ -39,6 +40,37 @@ HOST = "127.0.0.1"
 # ═══════════════════════════════════════════════════════════════════════
 
 class SessionManager:
+
+    _active_ids_cache = set()
+    _active_ids_time = 0
+
+    @staticmethod
+    def _get_active_session_ids():
+        """Find session IDs that have a running claude --resume process."""
+        now = time.time()
+        if now - SessionManager._active_ids_time < 1:
+            return SessionManager._active_ids_cache  # cache for 1s
+
+        ids = set()
+        try:
+            result = subprocess.run(
+                ["ps", "aux"], capture_output=True, text=True, timeout=3
+            )
+            for line in result.stdout.split("\n"):
+                if "claude" not in line:
+                    continue
+                # Match: claude --resume <session-id>  or  claude -r <session-id>
+                # Also: claude -r (resume latest, no explicit ID)
+                import re
+                m = re.search(r"claude\s+(?:--resume|-r)\s+([a-f0-9-]{36})", line)
+                if m:
+                    ids.add(m.group(1))
+        except Exception:
+            pass
+
+        SessionManager._active_ids_cache = ids
+        SessionManager._active_ids_time = now
+        return ids
 
     @staticmethod
     def list_all():
@@ -61,8 +93,9 @@ class SessionManager:
             info["size"] = SessionManager._format_size(stat.st_size)
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
-            # Active if modified in last 5 minutes
-            info["active"] = (time.time() - stat.st_mtime) < 300
+            # Active: running claude process OR modified in last 2 min
+            active_ids = SessionManager._get_active_session_ids()
+            info["active"] = session_id in active_ids or (time.time() - stat.st_mtime) < 120
             sessions.append(info)
 
         # Active sessions first, then by mtime
