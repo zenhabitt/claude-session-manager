@@ -746,7 +746,6 @@ FRONTEND = r"""<!DOCTYPE html>
   .info-toggle-icon {
     display: inline-flex; align-items: center; justify-content: center;
     width: 26px; height: 26px; flex-shrink: 0;
-    align-self: flex-end;
     border: 1px solid var(--border); border-radius: 5px;
     font-size: 13px; color: var(--text-dim); line-height: 1;
     transition: transform 0.2s ease, border-color 0.15s, color 0.15s;
