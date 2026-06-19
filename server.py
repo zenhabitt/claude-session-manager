@@ -888,6 +888,21 @@ async function init() {
   renderList();
   updateTrashBadge();
   applyLang();
+
+  // Auto-refresh every 15s to keep active indicators accurate
+  setInterval(async () => {
+    const newSessions = await api('/api/sessions');
+    const newTrash = await api('/api/trash');
+    // Only re-render if data changed
+    if (JSON.stringify(newSessions) !== JSON.stringify(sessions) ||
+        JSON.stringify(newTrash) !== JSON.stringify(trashItems)) {
+      sessions = newSessions;
+      trashItems = newTrash;
+      document.getElementById('session-count').textContent = sessions.length;
+      updateTrashBadge();
+      renderList();
+    }
+  }, 15000);
 }
 init();
 
