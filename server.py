@@ -740,18 +740,21 @@ FRONTEND = r"""<!DOCTYPE html>
     cursor: pointer; user-select: none; outline: none;
     word-break: break-word; white-space: normal;
     margin-bottom: 6px;
-    display: flex; align-items: flex-start; gap: 8px;
+    display: flex; align-items: center; gap: 8px;
   }
   .info-summary::-webkit-details-marker { display: none; }
   .info-toggle-icon {
     display: inline-flex; align-items: center; justify-content: center;
-    width: 20px; height: 20px; flex-shrink: 0;
-    border: 1px solid var(--border); border-radius: 4px;
-    font-size: 11px; color: var(--text-dim); line-height: 1;
-    transition: all .15s; margin-top: 1px;
+    width: 26px; height: 26px; flex-shrink: 0;
+    border: 1px solid var(--border); border-radius: 5px;
+    font-size: 13px; color: var(--text-dim); line-height: 1;
+    transition: transform 0.2s ease, border-color 0.15s, color 0.15s;
   }
   .info-summary:hover .info-toggle-icon {
     border-color: var(--text-dim); color: var(--text);
+  }
+  .info-details[open] .info-toggle-icon {
+    transform: rotate(90deg);
   }
   .info-details[open] .info-summary { margin-bottom: 10px; }
   .info-grid {
@@ -1242,7 +1245,7 @@ async function selectSession(id) {
       <div class="detail-header">
         <div class="detail-top-row">
           <details class="info-details">
-            <summary class="info-summary"><span class="info-toggle-icon">▸</span> <span>${esc(s.title)}</span></summary>
+            <summary class="info-summary"><span class="info-toggle-icon">▶</span> <span>${esc(s.title)}</span></summary>
             <div class="info-grid">
             <span class="label">${t('sessionId')}</span><span class="value">${s.id}</span>
             <span class="label">${t('project')}</span><span class="value">${esc(s.project)}</span>
