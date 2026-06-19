@@ -1226,7 +1226,7 @@ async function selectSession(id) {
           <span class="label">${t('size')}</span><span class="value">${s.size}</span>
         </div>
         <div class="actions">
-          <button class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>
+          ${s.active ? '' : `<button class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
           <button class="btn btn-danger" id="detail-delete-btn" onclick="askDeleteSession('${s.id}')">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
         </div>
       </div>
