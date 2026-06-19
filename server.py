@@ -146,8 +146,11 @@ class SessionManager:
 
         _log(f"─── SELECT resumed={resumed_ids} bare_count={bare_count} bare_dirs={bare_dirs} total={len(sessions)}")
 
-        # Sort by mtime
-        sessions.sort(key=lambda s: -s["mtime"])
+        # Sort by last message time (stable, not polluted by background writes)
+        def _sort_key(s):
+            lt = s.get("last_time", "")
+            return lt  # ISO 8601 string, lexicographic = chronological
+        sessions.sort(key=lambda s: (_sort_key(s) or ""), reverse=True)
         _log("  All sessions by mtime:")
         for i, s in enumerate(sessions):
             age = time.time() - s["mtime"]
