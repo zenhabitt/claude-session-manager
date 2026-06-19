@@ -584,11 +584,11 @@ FRONTEND = r"""<!DOCTYPE html>
   /* ── Header ── */
   header {
     background: var(--surface); border-bottom: 1px solid var(--border);
-    padding: 0 20px; height: 48px; display: flex; align-items: baseline;
+    padding: 0 20px; height: 48px; display: flex; align-items: center;
     justify-content: space-between; flex-shrink: 0; user-select: none;
   }
   header h1 { font-size: 14px; font-weight: 600; color: var(--text-bright); }
-  .header-right { display: flex; align-items: baseline; gap: 16px; }
+  .header-right { display: flex; align-items: center; gap: 16px; }
   .header-stats { font-size: 12px; color: var(--text-dim); }
   .header-stats span { color: var(--accent); font-weight: 600; }
   .lang-btn {
@@ -699,7 +699,7 @@ FRONTEND = r"""<!DOCTYPE html>
   }
   .session-card:hover .card-actions { display: flex; }
   .card-btn {
-    display: flex; align-items: baseline; gap: 3px;
+    display: flex; align-items: center; gap: 3px;
     padding: 3px 7px; border: 1px solid var(--border); border-radius: 4px;
     background: var(--surface); color: var(--text-dim); font-size: 11px;
     cursor: pointer; font-family: var(--font); transition: all .12s; white-space: nowrap;
@@ -714,7 +714,7 @@ FRONTEND = r"""<!DOCTYPE html>
     flex: 1; display: flex; flex-direction: column; background: var(--bg); overflow: hidden;
   }
   .empty-state {
-    flex: 1; display: flex; align-items: baseline; justify-content: center;
+    flex: 1; display: flex; align-items: center; justify-content: center;
     flex-direction: column; color: var(--text-dim); gap: 8px;
   }
   .empty-state .icon { font-size: 48px; opacity: 0.25; }
@@ -729,7 +729,7 @@ FRONTEND = r"""<!DOCTYPE html>
     margin-bottom: 10px; word-break: break-word;
   }
   .detail-top-row {
-    display: flex; align-items: baseline; gap: 12px;
+    display: flex; align-items: center; gap: 12px;
   }
   .detail-top-row .info-details { flex: 1; min-width: 0; cursor: default; }
   .detail-top-row .detail-actions {
@@ -740,12 +740,13 @@ FRONTEND = r"""<!DOCTYPE html>
     cursor: pointer; user-select: none; outline: none;
     word-break: break-word; white-space: normal;
     margin-bottom: 6px;
-    display: flex; align-items: baseline; gap: 8px;
+    display: flex; align-items: center; gap: 8px;
   }
   .info-summary::-webkit-details-marker { display: none; }
   .info-toggle-icon {
-    display: inline-flex; align-items: baseline; justify-content: center;
+    display: inline-flex; align-items: center; justify-content: center;
     width: 26px; height: 26px; flex-shrink: 0;
+    align-self: flex-end;
     border: 1px solid var(--border); border-radius: 5px;
     font-size: 13px; color: var(--text-dim); line-height: 1;
     transition: transform 0.2s ease, border-color 0.15s, color 0.15s;
@@ -766,7 +767,7 @@ FRONTEND = r"""<!DOCTYPE html>
     margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;
   }
   .btn {
-    display: inline-flex; align-items: baseline; gap: 5px;
+    display: inline-flex; align-items: center; gap: 5px;
     padding: 6px 14px; border-radius: 5px; border: 1px solid var(--border);
     font-size: 12px; font-family: var(--font); cursor: pointer; transition: all .12s;
     background: transparent; color: var(--text); white-space: nowrap;
@@ -828,7 +829,7 @@ FRONTEND = r"""<!DOCTYPE html>
   /* ── Modal ── */
   .modal-overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-    display: none; align-items: baseline; justify-content: center; z-index: 100;
+    display: none; align-items: center; justify-content: center; z-index: 100;
   }
   .modal-overlay.show { display: flex; }
   .modal {
