@@ -1447,8 +1447,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         cwd = os.path.expanduser("~")
         script = f'''
             tell application "Terminal"
-                activate
                 do script "cd {cwd} && claude"
+                activate
             end tell
         '''
         import subprocess
@@ -1470,8 +1470,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         # Build AppleScript to open Terminal and run claude --resume
         script = f'''
             tell application "Terminal"
-                activate
                 do script "cd {cwd} && claude --resume {session_id}"
+                activate
             end tell
         '''
         import subprocess
