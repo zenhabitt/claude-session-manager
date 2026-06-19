@@ -102,6 +102,16 @@ class SessionManager:
             info["active"] = session_id in resumed_ids
             sessions.append(info)
 
+        # ── Active Detection Log ──────────────────────────────────
+        def _log(msg):
+            try:
+                with open("/tmp/csm-active-debug.log", "a") as lf:
+                    lf.write(f"{time.strftime('%H:%M:%S')} {msg}\n")
+            except Exception:
+                pass
+
+        _log(f"─── poll resumed={resumed_ids} bare={bare_count} stopped={list(SessionManager._stopped_sessions.keys())}")
+
         # Sort by mtime descending first
         sessions.sort(key=lambda s: -s["mtime"])
 
@@ -116,15 +126,23 @@ class SessionManager:
             for sid, stop_mtime in list(SessionManager._stopped_sessions.items()):
                 for s in sessions:
                     if s["id"] == sid and s["mtime"] != stop_mtime:
+                        _log(f"  UNSTOP {sid[:8]} mtime changed {stop_mtime} -> {s['mtime']}")
                         del SessionManager._stopped_sessions[sid]
                         break
+            # Log each candidate
+            for s in sessions[:5]:
+                stopped = s["id"] in SessionManager._stopped_sessions
+                _log(f"  candidate {s['id'][:8]} mtime={s['mtime']} age={time.time()-s['mtime']:.1f}s stopped={stopped} title={s['title'][:30]}")
             for s in sessions:
                 if s["id"] not in resumed_ids \
                    and s["id"] not in SessionManager._stopped_sessions:
+                    _log(f"  → ACTIVATE {s['id'][:8]} {s['title'][:40]}")
                     s["active"] = True
                     n += 1
                     if n >= bare_count:
                         break
+            if n == 0:
+                _log(f"  → NO MATCH (all either resumed or stopped)")
 
         # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
@@ -1740,6 +1758,10 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                     break
             else:
                 SessionManager._stopped_sessions[session_id] = time.time()
+            try:
+                with open("/tmp/csm-active-debug.log", "a") as lf:
+                    lf.write(f"{__import__('time').strftime('%H:%M:%S')} STOP {session_id[:8]} mtime={SessionManager._stopped_sessions.get(session_id)}\n")
+            except: pass
 
             # SIGTERM for graceful shutdown
             for pid in target_pids:
