@@ -450,6 +450,8 @@ I18N = {
         "sortTime": "时间",
         "sortSize": "大小",
         "sortMessages": "消息数",
+        "allSessions": "所有会话",
+        "runningSessions": "运行中",
         "listTab": "会话列表",
         "trashTab": "回收站",
         "trashEmpty": "回收站是空的",
@@ -501,6 +503,8 @@ I18N = {
         "sortTime": "Time",
         "sortSize": "Size",
         "sortMessages": "Messages",
+        "allSessions": "All Sessions",
+        "runningSessions": "Running",
         "listTab": "Sessions",
         "trashTab": "Trash",
         "trashEmpty": "Trash is empty",
@@ -1043,15 +1047,15 @@ function renderList() {
     });
 
     const actives = filtered.filter(s => s.active);
-    const inactives = filtered.filter(s => !s.active);
 
     // Sort active sessions by mtime (latest first)
     actives.sort((a, b) => b.mtime - a.mtime);
 
-    // Sort inactive sessions by user's choice
-    if (sortBy === 'time') inactives.sort((a, b) => b.mtime - a.mtime);
-    else if (sortBy === 'size') inactives.sort((a, b) => b.size_bytes - a.size_bytes);
-    else if (sortBy === 'messages') inactives.sort((a, b) => b.messages - a.messages);
+    // Sort ALL sessions by user's choice for bottom section
+    const sorted = [...filtered];
+    if (sortBy === 'time') sorted.sort((a, b) => b.mtime - a.mtime);
+    else if (sortBy === 'size') sorted.sort((a, b) => b.size_bytes - a.size_bytes);
+    else if (sortBy === 'messages') sorted.sort((a, b) => b.messages - a.messages);
 
     const renderCard = (s) => {
       const sel = s.id === selectedId ? ' selected' : '';
@@ -1071,7 +1075,7 @@ function renderList() {
 
     let html = '';
     if (actives.length > 0) {
-      html += `<div class="section-header">🟢 Running</div>`;
+      html += `<div class="section-header">🟢 ${t('runningSessions')}</div>`;
       html += actives.map(renderCard).join('');
     }
     html += `<div class="sort-bar" id="sort-bar" style="padding:4px 12px 8px">
@@ -1079,7 +1083,8 @@ function renderList() {
       <button class="${sortBy==='size'?'active':''}" data-sort="size" onclick="setSort('size', this)">${t('sortSize')}</button>
       <button class="${sortBy==='messages'?'active':''}" data-sort="messages" onclick="setSort('messages', this)">${t('sortMessages')}</button>
     </div>`;
-    html += inactives.map(renderCard).join('');
+    html += `<div class="section-header">${t('allSessions')}</div>`;
+    html += sorted.map(renderCard).join('');
     container.innerHTML = html;
 
   } else {
