@@ -1704,48 +1704,32 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         """Kill the running claude process and close its Terminal window."""
         import subprocess, re
         try:
-            result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
-            pids_to_kill = []
+            result = subprocess.run(["ps", "-eo", "pid,ppid,tty,command"], capture_output=True, text=True, timeout=3)
+            claude_pids = []
+            shell_pids = set()
+
             for line in result.stdout.split("\n"):
                 if "claude" not in line or "Session Manager" in line:
                     continue
                 m = re.search(r"claude\s.*(?:--resume|-r)\s+([a-f0-9-]{36})", line)
                 if m and m.group(1) == session_id:
                     parts = line.split()
+                    claude_pids.append(parts[0])
                     if len(parts) > 1:
-                        pids_to_kill.append(parts[1])
+                        shell_pids.add(parts[1])  # PPID = the shell
 
-            if not pids_to_kill:
+            if not claude_pids:
                 return self._json({"success": False, "message": "No matching process found"})
 
-            # Find shell parents and the TTY
-            ttys = set()
-            for pid in pids_to_kill:
+            # Kill claude processes
+            for pid in claude_pids:
                 subprocess.run(["kill", pid], capture_output=True)
-                # Find the tty and parent shell
-                try:
-                    tty_result = subprocess.run(
-                        ["ps", "-p", pid, "-o", "tty,ppid"], capture_output=True, text=True, timeout=2
-                    )
-                    for tty_line in tty_result.stdout.strip().split("\n")[1:]:
-                        parts = tty_line.split()
-                        if parts:
-                            ttys.add(parts[0])
-                except Exception:
-                    pass
 
-            # Kill shells on the same TTYs — this closes the Terminal windows
-            if ttys:
-                shell_result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
-                for line in shell_result.stdout.split("\n"):
-                    parts = line.split()
-                    if len(parts) < 7:
-                        continue
-                    pid, tty = parts[1], parts[6]
-                    if tty in ttys and ("zsh" in line or "bash" in line) and "Terminal" not in line:
-                        subprocess.run(["kill", pid], capture_output=True)
+            # Kill parent shells — this closes the Terminal windows
+            for ppid in shell_pids:
+                subprocess.run(["kill", "-HUP", ppid], capture_output=True)
 
-            return self._json({"success": True, "message": f"Killed {len(pids_to_kill)} process(es)"})
+            return self._json({"success": True, "message": f"Killed {len(claude_pids)} process(es), closed Terminal"})
         except Exception as e:
             return self._json({"success": False, "message": str(e)})
 
