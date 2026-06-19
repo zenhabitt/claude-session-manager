@@ -110,12 +110,11 @@ class SessionManager:
         # Sort by mtime descending first
         sessions.sort(key=lambda s: -s["mtime"])
 
-        # When bare claude exists, only the single most-recent session is active (not already matched via --resume)
-        if bare_count > 0:
+        # When bare claude exists AND no resumed session matched, mark the most-recent session as active
+        if bare_count > 0 and not resumed_ids:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
-            # Mark the most-recently-modified session as active (likely the bare claude session)
             for s in sessions:
                 if s["id"] not in resumed_ids:
                     s["active"] = True
