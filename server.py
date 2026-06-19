@@ -66,7 +66,7 @@ class SessionManager:
             for line in result.stdout.split("\n"):
                 if "claude" not in line or "Session Manager" in line or "server.py" in line:
                     continue
-                if "vscode" in line or "claude-code" in line or "shell-snapshot" in line:
+                if "vscode" in line or "claude-code" in line or "shell-snapshot" in line or "git" in line:
                     continue
                 # Extract PID + command portion
                 pid_match = re.match(r'\S+\s+(\d+)\s+.*', line)
