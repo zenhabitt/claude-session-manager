@@ -135,8 +135,9 @@ class SessionManager:
                 for s in sessions:
                     if s["id"] not in resumed_ids and s.get("project_dir", "") in bare_dirs:
                         s["active"] = True
-                        bare_dirs.discard(s["project_dir"])
                         n += 1
+                        if n >= bare_count:
+                            break
             # Fallback: if no project match, use most recent by last_time
             if n == 0:
                 for s in sessions:
