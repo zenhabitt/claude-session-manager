@@ -951,6 +951,31 @@ function esc(str) {
   return div.innerHTML;
 }
 
+function renderMarkdown(str) {
+  // First HTML-escape to prevent XSS
+  const escaped = esc(str);
+  // Convert markdown to HTML
+  return escaped
+    // Bold: **text** or __text__
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/__(.+?)__/g, '<strong>$1</strong>')
+    // Italic: *text* or _text_ (but not ** already handled)
+    .replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>')
+    .replace(/(?<!_)_([^_\n]+?)_(?!_)/g, '<em>$1</em>')
+    // Code: `text`
+    .replace(/`([^`\n]+?)`/g, '<code>$1</code>')
+    // Heading ### text
+    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+    // Unordered list items
+    .replace(/^[\-*] (.+)$/gm, '<li>$1</li>')
+    // Inline link [text](url)
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+    // Double newline → paragraph break
+    .replace(/\n\n/g, '<br><br>');
+}
+
 function setSort(key, btn) {
   sortBy = key;
   document.querySelectorAll('#sort-bar button').forEach(b => b.classList.remove('active'));
@@ -1004,7 +1029,7 @@ async function selectSession(id) {
     preview.innerHTML = msgs.map(m => `
       <div class="msg ${m.role}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
-        <div>${esc(m.content)}</div>
+        <div>${renderMarkdown(m.content)}</div>
       </div>
     `).join('');
   } catch (e) {
