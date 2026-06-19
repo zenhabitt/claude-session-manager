@@ -739,6 +739,7 @@ FRONTEND = r"""<!DOCTYPE html>
     font-size: 16px; font-weight: 600; color: var(--text-bright);
     cursor: pointer; user-select: none; outline: none;
     word-break: break-word; white-space: normal;
+    display: block; /* suppress default list-item marker */
   }
   .info-summary::-webkit-details-marker { display: none; }
   .info-summary::before { content: '▸ '; font-size: 12px; color: var(--text-dim); margin-right: 6px; }
