@@ -1701,35 +1701,51 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
 
     def _stop_session(self, session_id):
-        """Kill the running claude process and close its Terminal window."""
+        """Kill the running claude process for a given session, and close its Terminal window."""
         import subprocess, re
         try:
-            result = subprocess.run(["ps", "-eo", "pid,ppid,tty,command"], capture_output=True, text=True, timeout=3)
-            claude_pids = []
+            result = subprocess.run(["ps", "-eo", "pid,ppid,command"], capture_output=True, text=True, timeout=3)
+            claude_pids = set()
             shell_pids = set()
 
             for line in result.stdout.split("\n"):
                 if "claude" not in line or "Session Manager" in line:
                     continue
-                m = re.search(r"claude\s.*(?:--resume|-r)\s+([a-f0-9-]{36})", line)
+
+                parts = line.split(None, 2)  # pid, ppid, command
+                if len(parts) < 3:
+                    continue
+                pid, ppid, cmd = parts
+
+                # Match: claude --resume <id> or claude -r <id>
+                m = re.search(r"claude\s.*(?:--resume|-r)\s+([a-f0-9-]{36})", cmd)
                 if m and m.group(1) == session_id:
-                    parts = line.split()
-                    claude_pids.append(parts[0])
-                    if len(parts) > 1:
-                        shell_pids.add(parts[1])  # PPID = the shell
+                    claude_pids.add(pid)
+                    shell_pids.add(ppid)
+                # Also match bare "claude -r" (no explicit ID) when this session
+                # is the active one detected via bare-claude logic
+                elif m is None and re.search(r"claude\s+-r\b", cmd) and not re.search(r"[a-f0-9-]{36}", cmd):
+                    claude_pids.add(pid)
+                    shell_pids.add(ppid)
+                elif "claude" in cmd and "--resume" not in cmd and "-r" not in cmd \
+                     and "claude-code" not in cmd and "vscode" not in cmd:
+                    claude_pids.add(pid)
+                    shell_pids.add(ppid)
 
             if not claude_pids:
                 return self._json({"success": False, "message": "No matching process found"})
 
-            # Kill claude processes
+            # Kill claude process first
             for pid in claude_pids:
                 subprocess.run(["kill", pid], capture_output=True)
 
-            # Kill parent shells — this closes the Terminal windows
+            # Kill parent shells to close Terminal windows
+            import time as _time
+            _time.sleep(0.5)
             for ppid in shell_pids:
-                subprocess.run(["kill", "-HUP", ppid], capture_output=True)
+                subprocess.run(["kill", "-9", ppid], capture_output=True)
 
-            return self._json({"success": True, "message": f"Killed {len(claude_pids)} process(es), closed Terminal"})
+            return self._json({"success": True, "message": f"Killed {len(claude_pids)} process(es)"})
         except Exception as e:
             return self._json({"success": False, "message": str(e)})
 
