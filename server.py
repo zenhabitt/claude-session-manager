@@ -97,12 +97,12 @@ class SessionManager:
             info["size"] = SessionManager._format_size(stat.st_size)
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
-            # Active: claude --resume <id> match, or bare claude + recent mtime, or very recent writes
+            # Active: claude --resume <id> match, or very recent writes
+            # (bare claude handled separately after sort)
             resumed_ids, bare_count = SessionManager._get_active_session_ids()
             age = time.time() - stat.st_mtime
             info["active"] = (
                 session_id in resumed_ids or
-                (bare_count > 0 and age < 300) or  # new session, idle up to 5 min
                 age < 120  # actively being written
             )
             sessions.append(info)
