@@ -1019,28 +1019,42 @@ function renderParts(parts) {
 }
 
 function renderMarkdown(str) {
-  // First HTML-escape to prevent XSS
   const escaped = esc(str);
-  // Convert markdown to HTML
-  return escaped
-    // Bold: **text** or __text__
+
+  // Protect code blocks and inline code from further processing
+  const codeBlocks = [];
+  let html = escaped
+    // Fenced code blocks ```...```
+    .replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+      codeBlocks.push(`<pre><code>${code.trim()}</code></pre>`);
+      return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
+    })
+    // Inline code `...`
+    .replace(/`([^`\n]+?)`/g, (_, code) => {
+      codeBlocks.push(`<code>${code}</code>`);
+      return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
+    });
+
+  // Apply markdown rules to non-code text
+  html = html
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/__(.+?)__/g, '<strong>$1</strong>')
-    // Italic: *text* or _text_ (but not ** already handled)
     .replace(/(?<!\*)\*([^*\n]+?)\*(?!\*)/g, '<em>$1</em>')
     .replace(/(?<!_)_([^_\n]+?)_(?!_)/g, '<em>$1</em>')
-    // Code: `text`
-    .replace(/`([^`\n]+?)`/g, '<code>$1</code>')
-    // Heading ### text
     .replace(/^### (.+)$/gm, '<h4>$1</h4>')
     .replace(/^## (.+)$/gm, '<h3>$1</h3>')
     .replace(/^# (.+)$/gm, '<h2>$1</h2>')
-    // Unordered list items
     .replace(/^[\-*] (.+)$/gm, '<li>$1</li>')
-    // Inline link [text](url)
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
-    // Double newline → paragraph break
-    .replace(/\n\n/g, '<br><br>');
+    .replace(/\n\n/g, '<br><br>')
+    .replace(/\n/g, '<br>');
+
+  // Restore protected code blocks
+  codeBlocks.forEach((block, i) => {
+    html = html.replace(`%%CODEBLOCK_${i}%%`, block);
+  });
+
+  return html;
 }
 
 function setSort(key, btn) {
