@@ -848,11 +848,6 @@ FRONTEND = r"""<!DOCTYPE html>
         <span class="badge" id="trash-badge" style="display:none">0</span>
       </button>
     </div>
-    <div class="sort-bar" id="sort-bar">
-      <button class="active" data-sort="time" onclick="setSort('time', this)"><span data-i18n="sortTime">Time</span></button>
-      <button data-sort="size" onclick="setSort('size', this)"><span data-i18n="sortSize">Size</span></button>
-      <button data-sort="messages" onclick="setSort('messages', this)"><span data-i18n="sortMessages">Messages</span></button>
-    </div>
     <div class="session-list" id="session-list"></div>
   </div>
 
@@ -1078,8 +1073,12 @@ function renderList() {
     if (actives.length > 0) {
       html += `<div class="section-header">🟢 Running</div>`;
       html += actives.map(renderCard).join('');
-      html += `<div class="section-divider"></div>`;
     }
+    html += `<div class="sort-bar" id="sort-bar" style="padding:4px 12px 8px">
+      <button class="${sortBy==='time'?'active':''}" data-sort="time" onclick="setSort('time', this)">${t('sortTime')}</button>
+      <button class="${sortBy==='size'?'active':''}" data-sort="size" onclick="setSort('size', this)">${t('sortSize')}</button>
+      <button class="${sortBy==='messages'?'active':''}" data-sort="messages" onclick="setSort('messages', this)">${t('sortMessages')}</button>
+    </div>`;
     html += inactives.map(renderCard).join('');
     container.innerHTML = html;
 
