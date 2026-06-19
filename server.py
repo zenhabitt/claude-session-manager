@@ -97,14 +97,9 @@ class SessionManager:
             info["size"] = SessionManager._format_size(stat.st_size)
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
-            # Active: claude --resume <id> match, or very recent writes
-            # (bare claude handled separately after sort)
+            # Active: only by running process (mtime unreliable — CC touches old files)
             resumed_ids, bare_count = SessionManager._get_active_session_ids()
-            age = time.time() - stat.st_mtime
-            info["active"] = (
-                session_id in resumed_ids or
-                age < 120  # actively being written
-            )
+            info["active"] = session_id in resumed_ids
             sessions.append(info)
 
         # Sort by mtime descending first
