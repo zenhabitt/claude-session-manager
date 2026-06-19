@@ -41,40 +41,55 @@ HOST = "127.0.0.1"
 
 class SessionManager:
 
-    _active_ids_cache = set()
+    _active_ids_cache = (set(), 0, set())
     _active_ids_time = 0
 
     @staticmethod
     def _get_active_session_ids():
         """Find session IDs that have a running claude process.
-        Returns (resumed_ids, has_bare_claude) tuple.
+        Returns (resumed_ids, bare_pids, bare_cwds) tuple.
         """
         now = time.time()
         if now - SessionManager._active_ids_time < 1:
             return SessionManager._active_ids_cache  # cached
 
         ids = set()
-        bare_count = 0
+        bare_pids = []
+        import re
         try:
             result = subprocess.run(
                 ["ps", "aux"], capture_output=True, text=True, timeout=3
             )
-            import re
             for line in result.stdout.split("\n"):
                 if "claude" not in line or "Session Manager" in line or "server.py" in line:
                     continue
-                # Match: claude --resume <id> or claude -r <id>
                 m = re.search(r"claude\s+(?:--resume|-r)\s+([a-f0-9-]{36})", line)
                 if m:
                     ids.add(m.group(1))
                 elif re.search(r"\bclaude\b", line) and "claude-code" not in line:
-                    bare_count += 1
+                    parts = line.split()
+                    if len(parts) > 1:
+                        bare_pids.append(parts[1])
         except Exception:
             pass
 
-        SessionManager._active_ids_cache = (ids, bare_count)
+        # Get cwd for each bare claude process
+        bare_cwds = set()
+        for pid in bare_pids:
+            try:
+                cwd_result = subprocess.run(
+                    ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
+                    capture_output=True, text=True, timeout=2
+                )
+                for cline in cwd_result.stdout.split("\n"):
+                    if cline.startswith("n"):
+                        bare_cwds.add(cline[1:])
+            except Exception:
+                pass
+
+        SessionManager._active_ids_cache = (ids, bare_pids, bare_cwds)
         SessionManager._active_ids_time = now
-        return (ids, bare_count)
+        return (ids, bare_pids, bare_cwds)
 
     @staticmethod
     def list_all():
@@ -97,28 +112,36 @@ class SessionManager:
             info["size"] = SessionManager._format_size(stat.st_size)
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
-            # Active: only by running process (mtime unreliable — CC touches old files)
-            resumed_ids, bare_count = SessionManager._get_active_session_ids()
+            # Active: only by running process
+            resumed_ids, bare_pids, bare_cwds = SessionManager._get_active_session_ids()
             info["active"] = session_id in resumed_ids
             sessions.append(info)
 
         # Sort by mtime descending first
         sessions.sort(key=lambda s: -s["mtime"])
 
-        # Bare claude processes: only activate sessions written to in the last 15s
-        # (prevents just-stopped sessions from being falsely detected as active)
-        if bare_count > 0:
+        # Bare claude processes: match by cwd. For each bare claude process,
+        # activate the most-recent session in the same working directory.
+        if bare_pids:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
-            now = time.time()
             for s in sessions:
-                if s["id"] not in resumed_ids and (now - s["mtime"]) < 15:
+                if s["id"] not in resumed_ids and s.get("cwd", "") in bare_cwds:
                     s["active"] = True
+                    bare_cwds.discard(s["cwd"])  # one session per cwd
                     n += 1
-                    if n >= bare_count:
+                    if n >= len(bare_pids):
                         break
+            # Fallback: if no cwd matches, activate most-recent sessions (e.g. new claude no session file yet)
+            if n == 0:
+                for s in sessions:
+                    if s["id"] not in resumed_ids:
+                        s["active"] = True
+                        n += 1
+                        if n >= len(bare_pids):
+                            break
 
         # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
@@ -977,8 +1000,7 @@ let currentDetailType = null;
 //  API
 // ═══════════════════════════════════════════════════════════════════
 async function api(path, method = 'GET') {
-  const url = path + (path.includes('?') ? '&' : '?') + '_=' + Date.now();
-  const res = await fetch(url, { method, cache: 'no-store' });
+  const res = await fetch(path, { method, cache: 'no-store' });
   return res.json();
 }
 
