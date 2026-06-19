@@ -41,26 +41,25 @@ HOST = "127.0.0.1"
 
 class SessionManager:
 
-    _active_ids_cache = (set(), 0)
+    _active_ids_cache = (set(), 0, set())
     _active_ids_time = 0
 
     @staticmethod
     def _get_active_session_ids():
-        """Find session IDs that have a running claude process.
-        Returns (resumed_ids, bare_count) tuple.
+        """Returns (resumed_ids, bare_count, bare_project_dirs).
+        bare_project_dirs: set of Claude project dirnames matching bare process cwds.
         """
         now = time.time()
         if now - SessionManager._active_ids_time < 0.5:
-            return SessionManager._active_ids_cache  # cached
+            return SessionManager._active_ids_cache
 
         ids = set()
-        bare_count = 0
+        bare_pids = []
         import re
         try:
             result = subprocess.run(
                 ["ps", "aux"], capture_output=True, text=True, timeout=3
             )
-            # ── Detailed Process Scan Log ──
             with open("/tmp/csm-active-debug.log", "a") as lf:
                 lf.write(f"[PS_SCAN] {time.strftime('%H:%M:%S')}\n")
             for line in result.stdout.split("\n"):
@@ -68,7 +67,6 @@ class SessionManager:
                     continue
                 if "vscode" in line or "claude-code" in line or "shell-snapshot" in line or "git" in line:
                     continue
-                # Extract PID + command portion
                 pid_match = re.match(r'\S+\s+(\d+)\s+.*', line)
                 pid = pid_match.group(1) if pid_match else '?'
                 cmd_short = line[80:200].strip() if len(line) > 80 else line.strip()
@@ -80,17 +78,36 @@ class SessionManager:
                     with open("/tmp/csm-active-debug.log", "a") as lf:
                         lf.write(f"    → RESUMED: {m.group(1)}\n")
                 elif re.search(r"\bclaude\b", line):
-                    bare_count += 1
+                    bare_pids.append(pid)
                     with open("/tmp/csm-active-debug.log", "a") as lf:
-                        lf.write(f"    → BARE (#{bare_count})\n")
-            with open("/tmp/csm-active-debug.log", "a") as lf:
-                lf.write(f"[PS_SCAN_END] resumed={ids} bare={bare_count}\n\n")
+                        lf.write(f"    → BARE\n")
         except Exception:
             pass
 
-        SessionManager._active_ids_cache = (ids, bare_count)
+        # Get cwds for bare claude processes, convert to project dirnames
+        bare_dirs = set()
+        for pid in bare_pids:
+            try:
+                cwd_r = subprocess.run(
+                    ["lsof", "-a", "-p", pid, "-d", "cwd", "-F", "n"],
+                    capture_output=True, text=True, timeout=2
+                )
+                for cl in cwd_r.stdout.split("\n"):
+                    if cl.startswith("n"):
+                        cwd = cl[1:]
+                        # Encode as Claude project directory name
+                        proj_dir = cwd.lstrip("/").replace("/", "-")
+                        bare_dirs.add(proj_dir)
+            except Exception:
+                pass
+
+        bare_count = len(bare_pids)
+        with open("/tmp/csm-active-debug.log", "a") as lf:
+            lf.write(f"[PS_SCAN_END] resumed={ids} bare={bare_count} bare_dirs={bare_dirs}\n\n")
+
+        SessionManager._active_ids_cache = (ids, bare_count, bare_dirs)
         SessionManager._active_ids_time = now
-        return (ids, bare_count)
+        return (ids, bare_count, bare_dirs)
 
     @staticmethod
     def list_all():
@@ -108,13 +125,14 @@ class SessionManager:
             info["id"] = session_id
             info["project"] = project_name
             info["filepath"] = str(jsonl_file)
+            info["project_dir"] = project_dir
             stat = jsonl_file.stat()
             info["size_bytes"] = stat.st_size
             info["size"] = SessionManager._format_size(stat.st_size)
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
             # Active: only by running process
-            resumed_ids, bare_count = SessionManager._get_active_session_ids()
+            resumed_ids, bare_count, bare_dirs = SessionManager._get_active_session_ids()
             info["active"] = session_id in resumed_ids
             sessions.append(info)
 
@@ -126,9 +144,9 @@ class SessionManager:
             except Exception:
                 pass
 
-        _log(f"─── SELECT resumed={resumed_ids} bare_count={bare_count} total={len(sessions)}")
+        _log(f"─── SELECT resumed={resumed_ids} bare_count={bare_count} bare_dirs={bare_dirs} total={len(sessions)}")
 
-        # Log all sessions with mtime ages
+        # Sort by mtime
         sessions.sort(key=lambda s: -s["mtime"])
         _log("  All sessions by mtime:")
         for i, s in enumerate(sessions):
@@ -136,22 +154,32 @@ class SessionManager:
             tags = []
             if s["id"] in resumed_ids: tags.append("RESUMED")
             if s.get("active"): tags.append("ACTIVE")
+            pd = s.get("project_dir", "?")
             tag = " [" + ",".join(tags) + "]" if tags else ""
-            _log(f"    {i+1}. {s['id'][:8]} age={age:.1f}s {s['title'][:30]}{tag}")
+            _log(f"    {i+1}. {s['id'][:8]} proj={pd} age={age:.1f}s {s['title'][:30]}{tag}")
 
-        # Bare claude: one bare process → one most-recent-by-mtime session.
+        # Bare claude: match by PROJECT DIRECTORY. Claude writes to all session files,
+        # so global mtime is unreliable. A process in ~/ matches sessions in project -Users-<name>.
         if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
-            for s in sessions:
-                if s["id"] not in resumed_ids:
-                    _log(f"  → ACTIVATE #{n+1}: {s['id'][:8]} age={time.time()-s['mtime']:.1f}s {s['title'][:40]}")
-                    s["active"] = True
-                    n += 1
-                    if n >= bare_count:
-                        break
+            if bare_dirs:
+                for s in sessions:
+                    if s["id"] not in resumed_ids and s.get("project_dir", "") in bare_dirs:
+                        _log(f"  → ACTIVATE #{n+1}: {s['id'][:8]} proj={s.get('project_dir','')} {s['title'][:40]}")
+                        s["active"] = True
+                        bare_dirs.discard(s["project_dir"])
+                        n += 1
+            if n == 0:
+                for s in sessions:
+                    if s["id"] not in resumed_ids:
+                        _log(f"  → ACTIVATE(fb) #{n+1}: {s['id'][:8]} {s['title'][:40]}")
+                        s["active"] = True
+                        n += 1
+                        if n >= bare_count:
+                            break
             _log(f"  Activated {n}/{bare_count} bare sessions")
 
         _log(f"─── RESULT: active={[s['id'][:8] for s in sessions if s['active']]}\n")
