@@ -739,11 +739,9 @@ FRONTEND = r"""<!DOCTYPE html>
     font-size: 16px; font-weight: 600; color: var(--text-bright);
     cursor: pointer; user-select: none; outline: none;
     word-break: break-word; white-space: normal;
-    display: block; /* suppress default list-item marker */
+    margin-bottom: 6px;
   }
-  .info-summary::-webkit-details-marker { display: none; }
-  .info-summary::before { content: '▸ '; font-size: 12px; color: var(--text-dim); margin-right: 6px; }
-  .info-details[open] .info-summary::before { content: '▾ '; }
+  .info-summary::-webkit-details-marker { color: var(--text-dim); }
   .info-details[open] .info-summary { margin-bottom: 10px; }
   .info-grid {
     display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px;
