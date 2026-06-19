@@ -729,7 +729,7 @@ FRONTEND = r"""<!DOCTYPE html>
     margin-bottom: 10px; word-break: break-word;
   }
   .detail-top-row {
-    display: flex; align-items: flex-end; gap: 12px;
+    display: flex; align-items: center; gap: 12px;
   }
   .detail-top-row .info-details { flex: 1; min-width: 0; cursor: default; }
   .detail-top-row .detail-actions {
@@ -740,7 +740,7 @@ FRONTEND = r"""<!DOCTYPE html>
     cursor: pointer; user-select: none; outline: none;
     word-break: break-word; white-space: normal;
     margin-bottom: 6px;
-    display: flex; align-items: flex-end; gap: 8px;
+    display: flex; align-items: center; gap: 8px;
   }
   .info-summary::-webkit-details-marker { display: none; }
   .info-toggle-icon {
