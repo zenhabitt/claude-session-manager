@@ -976,7 +976,8 @@ let currentDetailType = null;
 //  API
 // ═══════════════════════════════════════════════════════════════════
 async function api(path, method = 'GET') {
-  const res = await fetch(path, { method });
+  const url = path + (path.includes('?') ? '&' : '?') + '_=' + Date.now();
+  const res = await fetch(url, { method, cache: 'no-store' });
   return res.json();
 }
 
