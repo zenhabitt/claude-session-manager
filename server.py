@@ -1735,13 +1735,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             if not claude_pids:
                 return self._json({"success": False, "message": "No matching process found"})
 
-            # Kill claude process first
+            # Kill claude process first (SIGTERM = graceful shutdown)
             for pid in claude_pids:
                 subprocess.run(["kill", pid], capture_output=True)
 
-            # Kill parent shells to close Terminal windows
+            # Wait for claude to save session state
             import time as _time
-            _time.sleep(0.5)
+            _time.sleep(2)
             for ppid in shell_pids:
                 subprocess.run(["kill", "-9", ppid], capture_output=True)
 
