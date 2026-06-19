@@ -902,9 +902,13 @@ async function init() {
       updateTrashBadge();
       renderList();
     }
-    // Also refresh current detail panel if one is open
+    // Also refresh current detail panel if one is open (preserve scroll)
     if (selectedId && currentTab === 'list') {
-      selectSession(selectedId);
+      const previewEl = document.getElementById('conversation-preview');
+      const scrollTop = previewEl ? previewEl.scrollTop : 0;
+      await selectSession(selectedId);
+      const newPreview = document.getElementById('conversation-preview');
+      if (newPreview) newPreview.scrollTop = scrollTop;
     } else if (selectedId && currentTab === 'trash') {
       selectTrashItem(selectedId);
     }
