@@ -457,6 +457,7 @@ I18N = {
         "trashEmpty": "回收站是空的",
         "selectHint": "点击左侧会话查看详情",
         "delete": "删除",
+        "stop": "停止",
         "restore": "恢复",
         "permDelete": "彻底删除",
         "cancel": "取消",
@@ -510,6 +511,7 @@ I18N = {
         "trashEmpty": "Trash is empty",
         "selectHint": "Select a session to view details",
         "delete": "Delete",
+        "stop": "Stop",
         "restore": "Restore",
         "permDelete": "Delete Forever",
         "cancel": "Cancel",
@@ -1068,7 +1070,7 @@ function renderList() {
           <span class="project-tag">${esc(s.project)}</span>
         </div>
         <div class="card-actions">
-          <button class="card-btn danger" onclick="event.stopPropagation(); askDeleteSession('${s.id}')">&#x2715; ${t('delete')}</button>
+          <button class="card-btn danger" onclick="event.stopPropagation(); askDeleteSession('${s.id}')">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
         </div>
       </div>`;
     };
@@ -1224,7 +1226,7 @@ async function selectSession(id) {
         </div>
         <div class="actions">
           <button class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>
-          <button class="btn btn-danger" id="detail-delete-btn" onclick="askDeleteSession('${s.id}')">&#x2715; ${t('delete')}</button>
+          <button class="btn btn-danger" id="detail-delete-btn" onclick="askDeleteSession('${s.id}')">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
         </div>
       </div>
       <div class="conversation-preview" id="conversation-preview">${t('loading')}</div>
