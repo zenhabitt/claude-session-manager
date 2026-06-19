@@ -431,6 +431,8 @@ I18N = {
         "batchBar": "已选择",
         "batchDelete": "批量删除",
         "refresh": "刷新",
+        "newChat": "新对话",
+        "newChatStarted": "已在新终端中打开",
         "resume": "继续对话",
         "resumed": "已在新终端中打开",
     },
@@ -480,6 +482,8 @@ I18N = {
         "batchBar": "selected",
         "batchDelete": "Delete selected",
         "refresh": "Refresh",
+        "newChat": "New Chat",
+        "newChatStarted": "Opened in new terminal",
         "resume": "Continue",
         "resumed": "Opened in new terminal",
     },
@@ -738,6 +742,7 @@ FRONTEND = r"""<!DOCTYPE html>
 <header>
   <h1>▸ <span id="app-title">Claude Session Manager</span></h1>
   <div class="header-right">
+    <button class="lang-btn" onclick="newSession()" title="New chat" style="border-color:var(--accent);color:var(--accent)">+ <span data-i18n="newChat">New Chat</span></button>
     <button class="lang-btn" id="refresh-btn" onclick="refreshData()" title="Refresh">&#8635; <span data-i18n="refresh">Refresh</span></button>
     <div class="header-stats"><span id="session-count">0</span> <span id="sessions-label">sessions</span></div>
     <button class="lang-btn" id="lang-btn" onclick="toggleLang()">En</button>
@@ -1173,6 +1178,22 @@ function updateEmptyState() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  New Session
+// ═══════════════════════════════════════════════════════════════════
+async function newSession() {
+  try {
+    const res = await api('/api/new-session', 'POST');
+    if (res.success) {
+      toast(t('newChatStarted'), 'success');
+    } else {
+      toast(res.message || 'Failed', 'error');
+    }
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Resume Session
 // ═══════════════════════════════════════════════════════════════════
 async function resumeSession(id) {
@@ -1382,6 +1403,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         elif path.startswith("/api/sessions/") and path.endswith("/resume"):
             session_id = path.rsplit("/", 2)[-2]
             return self._resume_session(session_id)
+        elif path == "/api/new-session":
+            return self._new_session()
         else:
             return self._error(404, "Not found")
 
@@ -1417,6 +1440,23 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, DELETE, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def _new_session(self):
+        """Open a new Terminal window to start a fresh Claude Code session."""
+        # Default to user's home directory
+        cwd = os.path.expanduser("~")
+        script = f'''
+            tell application "Terminal"
+                activate
+                do script "cd {cwd} && claude"
+            end tell
+        '''
+        import subprocess
+        try:
+            subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
+            return self._json({"success": True, "message": "Starting new session"})
+        except subprocess.CalledProcessError as e:
+            return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
 
     def _resume_session(self, session_id):
         """Open a new Terminal window to resume a Claude Code session."""
