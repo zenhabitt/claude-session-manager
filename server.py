@@ -43,6 +43,7 @@ class SessionManager:
 
     _active_ids_cache = (set(), 0)
     _active_ids_time = 0
+    _stopped_sessions = {}  # session_id -> stop_time
 
     @staticmethod
     def _get_active_session_ids():
@@ -104,15 +105,21 @@ class SessionManager:
         # Sort by mtime descending first
         sessions.sort(key=lambda s: -s["mtime"])
 
-        # Bare claude: mark the N most-recent sessions being actively written (mtime < 10s)
+        # Bare claude: each bare process activates the most-recent non-resumed,
+        # non-stopped session. Exclude sessions stopped in last 60s.
         if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
             now = time.time()
+            # Clean expired stopped-session entries
+            expired = [sid for sid, ts in SessionManager._stopped_sessions.items() if now - ts > 60]
+            for sid in expired:
+                del SessionManager._stopped_sessions[sid]
             for s in sessions:
-                if s["id"] not in resumed_ids and (now - s["mtime"]) < 10:
+                if s["id"] not in resumed_ids \
+                   and s["id"] not in SessionManager._stopped_sessions:
                     s["active"] = True
                     n += 1
                     if n >= bare_count:
@@ -1753,6 +1760,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
             if not target_pids:
                 return self._json({"success": False, "message": "No matching process found"})
+
+            # Record as stopped to prevent false active
+            SessionManager._stopped_sessions[session_id] = time.time()
 
             # SIGTERM to claude for graceful shutdown
             for pid in target_pids:
