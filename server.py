@@ -41,20 +41,20 @@ HOST = "127.0.0.1"
 
 class SessionManager:
 
-    _active_ids_cache = (set(), 0, set())
+    _active_ids_cache = (set(), 0)
     _active_ids_time = 0
 
     @staticmethod
     def _get_active_session_ids():
         """Find session IDs that have a running claude process.
-        Returns (resumed_ids, bare_pids, bare_cwds) tuple.
+        Returns (resumed_ids, bare_count) tuple.
         """
         now = time.time()
-        if now - SessionManager._active_ids_time < 1:
+        if now - SessionManager._active_ids_time < 0.5:
             return SessionManager._active_ids_cache  # cached
 
         ids = set()
-        bare_pids = []
+        bare_count = 0
         import re
         try:
             result = subprocess.run(
@@ -67,29 +67,13 @@ class SessionManager:
                 if m:
                     ids.add(m.group(1))
                 elif re.search(r"\bclaude\b", line) and "claude-code" not in line:
-                    parts = line.split()
-                    if len(parts) > 1:
-                        bare_pids.append(parts[1])
+                    bare_count += 1
         except Exception:
             pass
 
-        # Get cwd for each bare claude process
-        bare_cwds = set()
-        for pid in bare_pids:
-            try:
-                cwd_result = subprocess.run(
-                    ["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"],
-                    capture_output=True, text=True, timeout=2
-                )
-                for cline in cwd_result.stdout.split("\n"):
-                    if cline.startswith("n"):
-                        bare_cwds.add(cline[1:])
-            except Exception:
-                pass
-
-        SessionManager._active_ids_cache = (ids, bare_pids, bare_cwds)
+        SessionManager._active_ids_cache = (ids, bare_count)
         SessionManager._active_ids_time = now
-        return (ids, bare_pids, bare_cwds)
+        return (ids, bare_count)
 
     @staticmethod
     def list_all():
@@ -113,35 +97,26 @@ class SessionManager:
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
             # Active: only by running process
-            resumed_ids, bare_pids, bare_cwds = SessionManager._get_active_session_ids()
+            resumed_ids, bare_count = SessionManager._get_active_session_ids()
             info["active"] = session_id in resumed_ids
             sessions.append(info)
 
         # Sort by mtime descending first
         sessions.sort(key=lambda s: -s["mtime"])
 
-        # Bare claude processes: match by cwd. For each bare claude process,
-        # activate the most-recent session in the same working directory.
-        if bare_pids:
+        # Bare claude: mark the N most-recent sessions being actively written (mtime < 10s)
+        if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
+            now = time.time()
             for s in sessions:
-                if s["id"] not in resumed_ids and s.get("cwd", "") in bare_cwds:
+                if s["id"] not in resumed_ids and (now - s["mtime"]) < 10:
                     s["active"] = True
-                    bare_cwds.discard(s["cwd"])  # one session per cwd
                     n += 1
-                    if n >= len(bare_pids):
+                    if n >= bare_count:
                         break
-            # Fallback: if no cwd matches, activate most-recent sessions (e.g. new claude no session file yet)
-            if n == 0:
-                for s in sessions:
-                    if s["id"] not in resumed_ids:
-                        s["active"] = True
-                        n += 1
-                        if n >= len(bare_pids):
-                            break
 
         # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
