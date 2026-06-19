@@ -728,15 +728,22 @@ FRONTEND = r"""<!DOCTYPE html>
     font-size: 16px; font-weight: 600; color: var(--text-bright);
     margin-bottom: 10px; word-break: break-word;
   }
-  .info-details { cursor: default; }
+  .detail-top-row {
+    display: flex; align-items: flex-start; gap: 12px;
+  }
+  .detail-top-row .info-details { flex: 1; min-width: 0; cursor: default; }
+  .detail-top-row .detail-actions {
+    display: flex; gap: 6px; flex-shrink: 0; padding-top: 2px;
+  }
   .info-summary {
     font-size: 16px; font-weight: 600; color: var(--text-bright);
     cursor: pointer; user-select: none; outline: none;
-    margin-bottom: 10px; word-break: break-word;
+    word-break: break-word; white-space: normal;
   }
   .info-summary::-webkit-details-marker { display: none; }
-  .info-summary::before { content: '▸ '; font-size: 12px; color: var(--text-dim); margin-right: 4px; }
+  .info-summary::before { content: '▸ '; font-size: 12px; color: var(--text-dim); margin-right: 6px; }
   .info-details[open] .info-summary::before { content: '▾ '; }
+  .info-details[open] .info-summary { margin-bottom: 10px; }
   .info-grid {
     display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px;
   }
@@ -1223,23 +1230,25 @@ async function selectSession(id) {
   panel.innerHTML = `
     <div class="detail">
       <div class="detail-header">
-        <details class="info-details">
-          <summary class="info-summary">${esc(s.title)}</summary>
-          <div class="info-grid">
-          <span class="label">${t('sessionId')}</span><span class="value">${s.id}</span>
-          <span class="label">${t('project')}</span><span class="value">${esc(s.project)}</span>
-          <span class="label">${t('branch')}</span><span class="value">${s.branch || '—'}</span>
-          <span class="label">${t('model')}</span><span class="value">${s.model || '—'}</span>
-          <span class="label">${t('messages')}</span><span class="value">${s.messages} (${s.turns} ${t('turns')})</span>
-          <span class="label">${t('tokens')}</span><span class="value">${(s.tokens || 0).toLocaleString()}</span>
-          <span class="label">${t('lastActive')}</span><span class="value">${s.last_time || s.date}</span>
-          <span class="label">${t('size')}</span><span class="value">${s.size}</span>
+        <div class="detail-top-row">
+          <details class="info-details">
+            <summary class="info-summary">${esc(s.title)}</summary>
+            <div class="info-grid">
+            <span class="label">${t('sessionId')}</span><span class="value">${s.id}</span>
+            <span class="label">${t('project')}</span><span class="value">${esc(s.project)}</span>
+            <span class="label">${t('branch')}</span><span class="value">${s.branch || '—'}</span>
+            <span class="label">${t('model')}</span><span class="value">${s.model || '—'}</span>
+            <span class="label">${t('messages')}</span><span class="value">${s.messages} (${s.turns} ${t('turns')})</span>
+            <span class="label">${t('tokens')}</span><span class="value">${(s.tokens || 0).toLocaleString()}</span>
+            <span class="label">${t('lastActive')}</span><span class="value">${s.last_time || s.date}</span>
+            <span class="label">${t('size')}</span><span class="value">${s.size}</span>
+          </div>
+          </details>
+          <div class="detail-actions">
+            ${s.active ? '' : `<button class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
+            <button class="btn btn-danger" id="detail-delete-btn" onclick="askDeleteSession('${s.id}')">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
+          </div>
         </div>
-        <div class="actions">
-          ${s.active ? '' : `<button class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
-          <button class="btn btn-danger" id="detail-delete-btn" onclick="askDeleteSession('${s.id}')">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
-        </div>
-        </details>
       </div>
       <div class="conversation-preview" id="conversation-preview">${t('loading')}</div>
     </div>
