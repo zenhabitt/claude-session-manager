@@ -43,7 +43,7 @@ class SessionManager:
 
     _active_ids_cache = (set(), 0)
     _active_ids_time = 0
-    _stopped_sessions = {}  # session_id -> stop_time
+    _stopped_sessions = {}  # session_id -> mtime_at_stop
 
     @staticmethod
     def _get_active_session_ids():
@@ -105,18 +105,19 @@ class SessionManager:
         # Sort by mtime descending first
         sessions.sort(key=lambda s: -s["mtime"])
 
-        # Bare claude: each bare process activates the most-recent non-resumed,
-        # non-stopped session. Exclude sessions stopped in last 60s.
+        # Bare claude: each bare process activates the most-recent non-resumed session.
+        # Exclude sessions stopped by user, unless their mtime changed (meaning resumed again).
         if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
-            now = time.time()
-            # Clean expired stopped-session entries
-            expired = [sid for sid, ts in SessionManager._stopped_sessions.items() if now - ts > 60]
-            for sid in expired:
-                del SessionManager._stopped_sessions[sid]
+            # Lift exclusion for sessions whose mtime changed since stop (user resumed them)
+            for sid, stop_mtime in list(SessionManager._stopped_sessions.items()):
+                for s in sessions:
+                    if s["id"] == sid and s["mtime"] != stop_mtime:
+                        del SessionManager._stopped_sessions[sid]
+                        break
             for s in sessions:
                 if s["id"] not in resumed_ids \
                    and s["id"] not in SessionManager._stopped_sessions:
@@ -1762,7 +1763,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 return self._json({"success": False, "message": "No matching process found"})
 
             # Record as stopped to prevent false active
-            SessionManager._stopped_sessions[session_id] = time.time()
+            # Record mtime at stop — exclusion lifts when file is modified again (user resumes)
+            for s in SessionManager.list_all():
+                if s["id"] == session_id:
+                    SessionManager._stopped_sessions[session_id] = s["mtime"]
+                    break
+            else:
+                SessionManager._stopped_sessions[session_id] = time.time()
 
             # SIGTERM to claude for graceful shutdown
             for pid in target_pids:
