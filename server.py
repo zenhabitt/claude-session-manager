@@ -1705,37 +1705,47 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         import subprocess, re
         try:
             result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
-            killed = 0
+            pids_to_kill = []
             for line in result.stdout.split("\n"):
                 if "claude" not in line or "Session Manager" in line:
                     continue
-                # Match claude --resume <id> or claude -r
                 m = re.search(r"claude\s.*(?:--resume|-r)\s+([a-f0-9-]{36})", line)
                 if m and m.group(1) == session_id:
                     parts = line.split()
                     if len(parts) > 1:
-                        pid = parts[1]
-                        subprocess.run(["kill", pid], capture_output=True)
-                        killed += 1
-            if killed > 0:
-                # Also close the Terminal window via AppleScript
-                close_script = f'''
-                    tell application "Terminal"
-                        repeat with w in windows
-                            repeat with t in tabs of w
-                                if name of t contains "{session_id}" then
-                                    close w
-                                    exit repeat
-                                end if
-                            end repeat
-                        end repeat
-                    end tell
-                '''
-                subprocess.run(["osascript", "-e", close_script],
-                               capture_output=True, timeout=3)
-                return self._json({"success": True, "message": f"Killed {killed} process(es)"})
-            else:
+                        pids_to_kill.append(parts[1])
+
+            if not pids_to_kill:
                 return self._json({"success": False, "message": "No matching process found"})
+
+            # Find shell parents and the TTY
+            ttys = set()
+            for pid in pids_to_kill:
+                subprocess.run(["kill", pid], capture_output=True)
+                # Find the tty and parent shell
+                try:
+                    tty_result = subprocess.run(
+                        ["ps", "-p", pid, "-o", "tty,ppid"], capture_output=True, text=True, timeout=2
+                    )
+                    for tty_line in tty_result.stdout.strip().split("\n")[1:]:
+                        parts = tty_line.split()
+                        if parts:
+                            ttys.add(parts[0])
+                except Exception:
+                    pass
+
+            # Kill shells on the same TTYs — this closes the Terminal windows
+            if ttys:
+                shell_result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
+                for line in shell_result.stdout.split("\n"):
+                    parts = line.split()
+                    if len(parts) < 7:
+                        continue
+                    pid, tty = parts[1], parts[6]
+                    if tty in ttys and ("zsh" in line or "bash" in line) and "Terminal" not in line:
+                        subprocess.run(["kill", pid], capture_output=True)
+
+            return self._json({"success": True, "message": f"Killed {len(pids_to_kill)} process(es)"})
         except Exception as e:
             return self._json({"success": False, "message": str(e)})
 
