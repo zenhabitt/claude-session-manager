@@ -741,6 +741,7 @@ FRONTEND = r"""<!DOCTYPE html>
     word-break: break-word; white-space: normal;
     margin-bottom: 6px;
     display: flex; align-items: center; gap: 8px;
+    line-height: 26px;
   }
   .info-summary::-webkit-details-marker { display: none; }
   .info-toggle-icon {
