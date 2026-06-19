@@ -41,39 +41,60 @@ HOST = "127.0.0.1"
 
 class SessionManager:
 
-    _active_ids_cache = (set(), 0)
+    _active_ids_cache = (set(), set())
     _active_ids_time = 0
 
     @staticmethod
     def _get_active_session_ids():
-        """Find session IDs that have a running claude process.
-        Returns (resumed_ids, bare_count) tuple.
+        """Find session IDs that have running claude processes.
+        Returns (resumed_ids, bare_cwds) tuple.
+        bare_cwds: set of working directories for bare claude processes.
         """
         now = time.time()
-        if now - SessionManager._active_ids_time < 0.5:
-            return SessionManager._active_ids_cache  # cached
+        if now - SessionManager._active_ids_time < 1:
+            return SessionManager._active_ids_cache
 
         ids = set()
-        bare_count = 0
+        bare_pids = []
         import re
         try:
             result = subprocess.run(
-                ["ps", "aux"], capture_output=True, text=True, timeout=3
+                ["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=3
             )
             for line in result.stdout.split("\n"):
                 if "claude" not in line or "Session Manager" in line or "server.py" in line:
                     continue
-                m = re.search(r"claude\s+(?:--resume|-r)\s+([a-f0-9-]{36})", line)
+                if "claude-code" in line or "vscode" in line:
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                pid, cmd = parts
+                m = re.search(r"claude\s+(?:--resume|-r)\s+([a-f0-9-]{36})", cmd)
                 if m:
                     ids.add(m.group(1))
-                elif re.search(r"\bclaude\b", line) and "claude-code" not in line:
-                    bare_count += 1
+                elif re.search(r"\bclaude\b", cmd):
+                    bare_pids.append(pid)
         except Exception:
             pass
 
-        SessionManager._active_ids_cache = (ids, bare_count)
+        # Get cwd for each bare claude process
+        bare_cwds = set()
+        for pid in bare_pids:
+            try:
+                cwd_r = subprocess.run(
+                    ["lsof", "-a", "-p", pid, "-d", "cwd", "-F", "n"],
+                    capture_output=True, text=True, timeout=2
+                )
+                for cl in cwd_r.stdout.split("\n"):
+                    if cl.startswith("n"):
+                        bare_cwds.add(cl[1:])
+            except Exception:
+                pass
+
+        SessionManager._active_ids_cache = (ids, bare_cwds)
         SessionManager._active_ids_time = now
-        return (ids, bare_count)
+        return (ids, bare_cwds)
 
     @staticmethod
     def list_all():
@@ -97,7 +118,7 @@ class SessionManager:
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
             # Active: only by running process
-            resumed_ids, bare_count = SessionManager._get_active_session_ids()
+            resumed_ids, bare_cwds = SessionManager._get_active_session_ids()
             info["active"] = session_id in resumed_ids
             sessions.append(info)
 
@@ -109,27 +130,24 @@ class SessionManager:
             except Exception:
                 pass
 
-        _log(f"─── poll resumed={resumed_ids} bare={bare_count}")
+        _log(f"─── poll resumed={resumed_ids} bare_cwds={bare_cwds}")
 
-        # Bare claude: activate the N most-recent-by-mtime non-resumed sessions.
-        # Running sessions are continuously written → mtime stays fresh.
-        # Stopped sessions are not written → mtime ages → naturally fall behind.
-        if bare_count > 0:
+        # Bare claude: match by process cwd. One session per bare process.
+        if bare_cwds:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
-            n = 0
-            # Sort by mtime descending
             sessions.sort(key=lambda s: -s["mtime"])
+            used_cwds = set()
             for s in sessions[:5]:
-                _log(f"  candidate {s['id'][:8]} age={time.time()-s['mtime']:.1f}s title={s['title'][:30]}")
+                c = s.get("cwd", "")
+                _log(f"  candidate {s['id'][:8]} cwd={c} match={c in bare_cwds} title={s['title'][:30]}")
             for s in sessions:
-                if s["id"] not in resumed_ids:
-                    _log(f"  → ACTIVATE {s['id'][:8]} {s['title'][:40]}")
+                c = s.get("cwd", "")
+                if s["id"] not in resumed_ids and c in bare_cwds and c not in used_cwds:
+                    _log(f"  → ACTIVATE {s['id'][:8]} cwd={c} {s['title'][:40]}")
                     s["active"] = True
-                    n += 1
-                    if n >= bare_count:
-                        break
+                    used_cwds.add(c)
 
         # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
