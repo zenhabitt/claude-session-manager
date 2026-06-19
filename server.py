@@ -458,6 +458,10 @@ I18N = {
         "selectHint": "点击左侧会话查看详情",
         "delete": "删除",
         "stop": "停止",
+        "stopConfirmTitle": "确认停止",
+        "stopConfirmMsg": "这会终止该会话正在运行的 Claude 进程。<br>会话文件不会被删除，你稍后可以继续对话。",
+        "confirmStopBtn": "停止进程",
+        "stopped": "已终止进程",
         "restore": "恢复",
         "permDelete": "彻底删除",
         "cancel": "取消",
@@ -512,6 +516,10 @@ I18N = {
         "selectHint": "Select a session to view details",
         "delete": "Delete",
         "stop": "Stop",
+        "stopConfirmTitle": "Stop Session",
+        "stopConfirmMsg": "This will terminate the running Claude process.<br>The session file will NOT be deleted — you can resume it later.",
+        "confirmStopBtn": "Stop Process",
+        "stopped": "Process terminated",
         "restore": "Restore",
         "permDelete": "Delete Forever",
         "cancel": "Cancel",
@@ -1099,7 +1107,7 @@ function renderList() {
           <span class="project-tag">${esc(s.project)}</span>
         </div>
         <div class="card-actions">
-          <button class="card-btn danger" onclick="event.stopPropagation(); askDeleteSession('${s.id}')">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
+          <button class="card-btn danger" onclick="event.stopPropagation(); ${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
         </div>
       </div>`;
     };
@@ -1258,7 +1266,7 @@ async function selectSession(id) {
           </details>
           <div class="detail-actions">
             ${s.active ? '' : `<button class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
-            <button class="btn btn-danger" id="detail-delete-btn" onclick="askDeleteSession('${s.id}')">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
+            <button class="btn btn-danger" id="detail-delete-btn" onclick="${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
           </div>
         </div>
       </div>
@@ -1390,6 +1398,28 @@ async function resumeSession(id) {
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Stop Session
+// ═══════════════════════════════════════════════════════════════════
+function askStopSession(id) {
+  const s = sessions.find(s => s.id === id);
+  const body = `${t('stopConfirmMsg')}<br><br><b class="highlight">${esc(s?.title || id)}</b>`;
+
+  showModal(t('stopConfirmTitle'), body, t('confirmStopBtn'), 'danger', async () => {
+    closeModal();
+    try {
+      const res = await api(`/api/sessions/${id}/stop`, 'POST');
+      if (res.success) {
+        toast(t('stopped'), 'success');
+      } else {
+        toast(res.message || 'Failed', 'error');
+      }
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1586,6 +1616,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         elif path.startswith("/api/sessions/") and path.endswith("/resume"):
             session_id = path.rsplit("/", 2)[-2]
             return self._resume_session(session_id)
+        elif path.startswith("/api/sessions/") and path.endswith("/stop"):
+            session_id = path.rsplit("/", 2)[-2]
+            return self._stop_session(session_id)
         elif path == "/api/new-session":
             return self._new_session()
         else:
@@ -1663,6 +1696,31 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json({"success": True, "message": f"Resuming session {session_id}"})
         except subprocess.CalledProcessError as e:
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
+
+    def _stop_session(self, session_id):
+        """Kill the running claude process for a given session."""
+        import subprocess, re
+        try:
+            result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=3)
+            killed = 0
+            for line in result.stdout.split("\n"):
+                if "claude" not in line or "Session Manager" in line:
+                    continue
+                # Match claude --resume <id> or claude -r
+                m = re.search(r"claude\s.*(?:--resume|-r)\s+([a-f0-9-]{36})", line)
+                if m and m.group(1) == session_id:
+                    # Extract PID (second column in ps aux)
+                    parts = line.split()
+                    if len(parts) > 1:
+                        pid = parts[1]
+                        subprocess.run(["kill", pid], capture_output=True)
+                        killed += 1
+            if killed > 0:
+                return self._json({"success": True, "message": f"Killed {killed} process(es)"})
+            else:
+                return self._json({"success": False, "message": "No matching process found"})
+        except Exception as e:
+            return self._json({"success": False, "message": str(e)})
 
     def _find_session_path(self, session_id):
         for s in SessionManager.list_all():
