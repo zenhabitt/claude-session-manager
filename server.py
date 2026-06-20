@@ -233,7 +233,7 @@ class SessionManager:
         }
 
     @staticmethod
-    def get_preview(filepath, max_messages=200):
+    def get_preview(filepath, max_messages=400):
         """Return structured conversation preview with typed content parts."""
         messages = []
         with open(filepath, "r", encoding="utf-8") as f:
@@ -529,6 +529,7 @@ I18N = {
         "batchBar": "已选择",
         "batchDelete": "批量删除",
         "refresh": "刷新",
+        "scrollToBottom": "回到底部",
         "newChat": "新对话",
         "newChatStarted": "已在新终端中打开",
         "newSessionPlaceholder": "新会话",
@@ -590,6 +591,7 @@ I18N = {
         "batchBar": "selected",
         "batchDelete": "Delete selected",
         "refresh": "Refresh",
+        "scrollToBottom": "Scroll to bottom",
         "newChat": "New Chat",
         "newChatStarted": "Opened in new terminal",
         "newSessionPlaceholder": "New Session",
@@ -872,6 +874,16 @@ FRONTEND = r"""<!DOCTYPE html>
   }
   .conversation-preview::-webkit-scrollbar { width: 5px; }
   .conversation-preview::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .scroll-to-bottom {
+    position: sticky; bottom: 12px; display: none; margin: 0 auto;
+    padding: 5px 14px; border-radius: 16px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--accent); font-size: 11px;
+    font-family: var(--font); cursor: pointer; z-index: 10;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+  .scroll-to-bottom:hover { background: var(--surface2); border-color: var(--accent); }
+  .scroll-to-bottom.show { display: block; }
 
   .msg { margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; font-size: 12px; line-height: 1.55; word-break: break-word; }
   .msg.user { background: var(--surface); border-left: 2px solid var(--accent); }
@@ -1383,7 +1395,7 @@ async function selectSession(id) {
           </div>
         </div>
       </div>
-      <div class="conversation-preview" id="conversation-preview">${t('loading')}</div>
+      <div class="conversation-preview" id="conversation-preview" onscroll="updateScrollButton()">${t('loading')}</div>
     </div>
   `;
 
@@ -1399,7 +1411,10 @@ async function selectSession(id) {
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
         ${renderParts(m.parts || [])}
       </div>
-    `).join('');
+    `).join('') + `<button type="button" class="scroll-to-bottom" id="scroll-to-bottom-btn" onclick="scrollToLatest()">↓ ${t('scrollToBottom')}</button>`;
+    // Auto-scroll to bottom on initial load
+    preview.scrollTop = preview.scrollHeight;
+    window._autoScroll = true;
   } catch (e) {
     document.getElementById('conversation-preview').innerHTML = `<p style="color:var(--danger);padding:20px">${t('loadFailed')}</p>`;
   }
@@ -1411,20 +1426,46 @@ async function refreshPreview(id) {
   try {
     const msgs = await api(`/api/sessions/${id}/preview`);
     if (!msgs || msgs.length === 0) return;
-    // Only append new messages — avoid rebuilding entire DOM
     const existingCount = container.querySelectorAll('.msg').length;
-    if (msgs.length <= existingCount) return; // nothing new
+    if (msgs.length <= existingCount) return;
     const newMsgs = msgs.slice(existingCount);
-    const scrollAtBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 40;
+    const atBottom = window._autoScroll;
+    // Keep only latest 400 messages in DOM too (sliding window)
+    const allMsgs = container.querySelectorAll('.msg');
+    while (allMsgs.length + newMsgs.length > 400 && allMsgs.length > 0) {
+      allMsgs[0].remove();
+    }
     container.insertAdjacentHTML('beforeend', newMsgs.map(m => `
       <div class="msg ${m.role}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
         ${renderParts(m.parts || [])}
       </div>
     `).join(''));
-    // Auto-scroll only if already at bottom
-    if (scrollAtBottom) container.scrollTop = container.scrollHeight;
+    if (atBottom) container.scrollTop = container.scrollHeight;
+    updateScrollButton();
   } catch (e) { console.error('refreshPreview failed:', e); }
+}
+
+function updateScrollButton() {
+  const container = document.getElementById('conversation-preview');
+  const btn = document.getElementById('scroll-to-bottom-btn');
+  if (!container || !btn) return;
+  const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 50;
+  if (atBottom) {
+    btn.classList.remove('show');
+    window._autoScroll = true;
+  } else {
+    btn.classList.add('show');
+  }
+}
+
+function scrollToLatest() {
+  const container = document.getElementById('conversation-preview');
+  if (container) {
+    container.scrollTop = container.scrollHeight;
+    window._autoScroll = true;
+    updateScrollButton();
+  }
 }
 
 function updateSessionDetail() {
