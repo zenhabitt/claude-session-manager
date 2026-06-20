@@ -1434,8 +1434,23 @@ async function refreshPreview(id) {
       const apiText = renderParts(msgs[i].parts || []).replace(/<[^>]*>/g,'').trim();
       if (apiText === lastDomText) { startIdx = i + 1; break; }
     }
-    if (startIdx === 0 && existingEls.length === msgs.length) return;
-    const newMsgs = startIdx > 0 ? msgs.slice(startIdx) : msgs.slice(existingEls.length);
+    if (startIdx === 0) {
+      // Text match failed — check if content actually changed
+      const lastApiText = renderParts(msgs[msgs.length - 1].parts || []).replace(/<[^>]*>/g,'').trim();
+      if (lastApiText === lastDomText) return; // nothing new
+      // Content changed but old DOM msg fell off deque — full rebuild needed
+      const atBottom2 = window._autoScroll;
+      container.innerHTML = msgs.map(m => `
+        <div class="msg ${m.role}">
+          <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
+          ${renderParts(m.parts || [])}
+        </div>
+      `).join('');
+      if (atBottom2) container.scrollTop = container.scrollHeight;
+      updateScrollButton();
+      return;
+    }
+    const newMsgs = msgs.slice(startIdx);
     if (newMsgs.length === 0) return;
     // Append only — no scroll disruption for reading user
     const atBottom = window._autoScroll;
