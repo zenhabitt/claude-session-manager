@@ -1069,16 +1069,18 @@ async function refreshData() {
   sessions = await api('/api/sessions');
   trashItems = await api('/api/trash');
 
-  // Remove placeholder if a real new session now exists (has messages or title)
-  const placeholder = sessions.find(s => s._placeholder);
-  if (placeholder) {
-    const realNew = sessions.find(s => !s._placeholder && s.mtime > placeholder.mtime - 5);
-    if (realNew && realNew.title !== t('newSessionPlaceholder')) {
-      sessions = sessions.filter(s => !s._placeholder);
-      // Select the real session that replaced the placeholder
-      if (selectedId === '__placeholder__') {
-        selectedId = realNew.id;
-      }
+  // Keep placeholder if it exists and no real new session has replaced it yet
+  if (window._placeholder) {
+    const realMatch = sessions.find(s =>
+      s.mtime > window._placeholder.mtime - 10 && !s._placeholder
+    );
+    if (realMatch && (realMatch.messages > 0 || realMatch.title !== t('newSessionPlaceholder'))) {
+      // Real session found — remove placeholder, select real one
+      window._placeholder = null;
+      if (selectedId === '__placeholder__') selectedId = realMatch.id;
+    } else {
+      // Keep placeholder
+      sessions.unshift(window._placeholder);
     }
   }
 
@@ -1421,8 +1423,8 @@ async function newSession() {
     const res = await api('/api/new-session', 'POST');
     if (res.success) {
       toast(t('newChatStarted'), 'success');
-      // Insert placeholder at top of session list
-      sessions.unshift({
+      // Store placeholder globally so refreshData preserves it
+      window._placeholder = {
         id: '__placeholder__',
         title: t('newSessionPlaceholder'),
         active: true,
@@ -1439,7 +1441,8 @@ async function newSession() {
         branch: '',
         project: '~',
         _placeholder: true,
-      });
+      };
+      sessions.unshift(window._placeholder);
       document.getElementById('session-count').textContent = sessions.length;
       renderList();
     } else {
