@@ -129,23 +129,8 @@ class SessionManager:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
-            now = time.time()
-            # Sort: sessions with recent last_time first, brand-new (no messages
-            # but mtime < 10s) next, then by last_time. Background file writes
-            # don't add messages, so last_time is stable.
-            # Only activate sessions with last_time from the last 2 min
-            # or brand-new (no messages but mtime < 10s).
-            # Prevents bare processes without session files from matching old sessions.
-            cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=2)).isoformat()
-            def _bare_ok(s):
-                lt = s.get("last_time") or ""
-                if lt and lt > cutoff:
-                    return True
-                if not lt and (time.time() - s["mtime"]) < 10:
-                    return True
-                return False
             for s in sessions:
-                if s["id"] not in resumed_ids and _bare_ok(s):
+                if s["id"] not in resumed_ids:
                     s["active"] = True
                     n += 1
                     if n >= bare_count:
