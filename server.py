@@ -692,7 +692,7 @@ FRONTEND = r"""<!DOCTYPE html>
   .search-bar input {
     width: 100%; padding: 8px 12px; border: 1px solid var(--border);
     border-radius: 6px; background: var(--bg); color: var(--text);
-    font-size: 13px; font-family: var(--font); outline: none; box-shadow: 0 0 0 2px var(--accent); transition: border-color .15s;
+    font-size: 13px; font-family: var(--font); outline: none; transition: border-color .15s;
   }
   .search-bar input:focus { border-color: var(--accent); }
   .search-bar input::placeholder { color: var(--text-dim); }
@@ -818,7 +818,7 @@ FRONTEND = r"""<!DOCTYPE html>
   }
   .info-summary {
     font-size: 16px; font-weight: 600; color: var(--text-bright);
-    cursor: pointer; user-select: none; outline: none; box-shadow: 0 0 0 2px var(--accent);
+    cursor: pointer; user-select: none; outline: none;
     word-break: break-word; white-space: normal;
     margin-bottom: 6px;
     display: flex; align-items: center; gap: 8px;
