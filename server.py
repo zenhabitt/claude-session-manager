@@ -524,6 +524,8 @@ I18N = {
         "confirmRestoreBtn": "确认恢复",
         "confirmPermDeleteBtn": "确认彻底删除",
         "language": "En",
+        "themeWarm": "暖金",
+        "themeCool": "冷蓝",
         "batchBar": "已选择",
         "batchDelete": "批量删除",
         "refresh": "刷新",
@@ -583,6 +585,8 @@ I18N = {
         "confirmRestoreBtn": "Restore",
         "confirmPermDeleteBtn": "Delete Forever",
         "language": "中文",
+        "themeWarm": "Warm",
+        "themeCool": "Cool",
         "batchBar": "selected",
         "batchDelete": "Delete selected",
         "refresh": "Refresh",
@@ -606,7 +610,7 @@ FRONTEND = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Session Manager</title>
 <style>
-  :root {
+  :root, [data-theme="warm"] {
     --bg: #1a1918; --surface: #242321; --surface2: #2d2b28; --border: #383532;
     --text: #c4bbb4; --text-dim: #877f76; --text-bright: #e8e0d8;
     --accent: #c4944a; --accent-hover: #d4a55a;
@@ -616,6 +620,42 @@ FRONTEND = r"""<!DOCTYPE html>
     --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
     --mono: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
   }
+  [data-theme="cool"] {
+    --bg: #1a1b1e; --surface: #25262b; --surface2: #2c2e33; --border: #373a40;
+    --text: #c1c2c5; --text-dim: #909296; --text-bright: #e0e0e0;
+    --accent: #6c8aff; --accent-hover: #8ba3ff;
+    --danger: #ff6b6b; --danger-hover: #ff8787; --danger-bg: rgba(255,107,107,0.08);
+    --success: #69db7c; --warn: #ffd43b;
+    --radius: 8px;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+    --mono: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+  }
+
+  /* Theme-dependent color overrides */
+  [data-theme="warm"] .session-card .project-tag { background: rgba(196,148,74,0.12); }
+  [data-theme="cool"] .session-card .project-tag { background: rgba(108,138,255,0.12); }
+  [data-theme="warm"] .part-tool { background: rgba(196,148,74,0.06); border-color: rgba(196,148,74,0.15); }
+  [data-theme="cool"] .part-tool { background: rgba(108,138,255,0.06); border-color: rgba(108,138,255,0.15); }
+  [data-theme="warm"] .part-tool-result { background: rgba(196,148,74,0.04); border-color: rgba(196,148,74,0.1); }
+  [data-theme="cool"] .part-tool-result { background: rgba(108,138,255,0.04); border-color: rgba(108,138,255,0.1); }
+  [data-theme="warm"] .part-thinking .thinking-content { border-left-color: var(--accent); }
+  [data-theme="cool"] .part-thinking .thinking-content { border-left-color: #6a5acd; }
+  [data-theme="warm"] .session-card.active { border-color: rgba(196,148,74,0.3); }
+  [data-theme="cool"] .session-card.active { border-color: rgba(105,219,124,0.25); }
+  [data-theme="warm"] .part-tool-result.error { border-color: rgba(196,106,94,0.25); }
+  [data-theme="cool"] .part-tool-result.error { border-color: rgba(255,107,107,0.2); }
+  @keyframes breathe-warm {
+    0%, 100% { box-shadow: 0 0 0 rgba(196,148,74,0); }
+    50% { box-shadow: 0 0 10px rgba(196,148,74,0.2); }
+  }
+  @keyframes breathe-cool {
+    0%, 100% { box-shadow: 0 0 0 rgba(105,219,124,0); }
+    50% { box-shadow: 0 0 8px rgba(105,219,124,0.15); }
+  }
+  [data-theme="warm"] .session-card.active { animation: breathe-warm 2.5s ease-in-out infinite; }
+  [data-theme="cool"] .session-card.active { animation: breathe-cool 2.5s ease-in-out infinite; }
+
+  /* Base styles that don't depend on theme variables */
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: var(--font); background: var(--bg); color: var(--text);
@@ -906,6 +946,7 @@ FRONTEND = r"""<!DOCTYPE html>
     <button class="lang-btn" onclick="newSession()" title="New chat" style="border-color:var(--accent);color:var(--accent)">+ <span data-i18n="newChat">New Chat</span></button>
     <button class="lang-btn" id="refresh-btn" onclick="refreshData()" title="Refresh">&#8635; <span data-i18n="refresh">Refresh</span></button>
     <div class="header-stats"><span id="session-count">0</span> <span id="sessions-label">sessions</span></div>
+    <button class="lang-btn" id="theme-btn" onclick="toggleTheme()" title="Theme">&#9788;</button>
     <button class="lang-btn" id="lang-btn" onclick="toggleLang()">En</button>
   </div>
 </header>
@@ -980,6 +1021,17 @@ function applyLang() {
   else updateEmptyState();
 }
 
+let THEME = localStorage.getItem('csm-theme') || 'warm';
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', THEME);
+  document.getElementById('theme-btn').textContent = THEME === 'warm' ? t('themeCool') : t('themeWarm');
+}
+function toggleTheme() {
+  THEME = THEME === 'warm' ? 'cool' : 'warm';
+  localStorage.setItem('csm-theme', THEME);
+  applyTheme();
+}
+
 function toggleLang() {
   LANG = LANG === 'zh' ? 'en' : 'zh';
   localStorage.setItem('csm-lang', LANG);
@@ -1017,6 +1069,7 @@ async function api(path, method = 'GET') {
 //  Init
 // ═══════════════════════════════════════════════════════════════════
 async function init() {
+  applyTheme();
   sessions = await api('/api/sessions');
   trashItems = await api('/api/trash');
   document.getElementById('session-count').textContent = sessions.length;
