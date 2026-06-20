@@ -1028,6 +1028,18 @@ async function init() {
   setInterval(async () => {
     const newSessions = await api('/api/sessions');
     const newTrash = await api('/api/trash');
+    // Preserve placeholder until real session replaces it
+    if (window._placeholder) {
+      const realMatch = newSessions.find(s =>
+        s.mtime > window._placeholder.mtime - 10 && !s._placeholder
+      );
+      if (realMatch && (realMatch.messages > 0 || realMatch.title !== t('newSessionPlaceholder'))) {
+        window._placeholder = null;
+        if (selectedId === '__placeholder__') selectedId = realMatch.id;
+      } else {
+        newSessions.unshift(window._placeholder);
+      }
+    }
     const changed = JSON.stringify(newSessions) !== JSON.stringify(sessions) ||
                     JSON.stringify(newTrash) !== JSON.stringify(trashItems);
     if (changed) {
