@@ -1035,6 +1035,7 @@ function toggleTheme() {
 function toggleLang() {
   LANG = LANG === 'zh' ? 'en' : 'zh';
   localStorage.setItem('csm-lang', LANG);
+  applyTheme();  // theme button text uses t()
   // Update sort buttons
   document.querySelectorAll('#sort-bar button').forEach(b => {
     const sortKey = b.getAttribute('data-sort');
