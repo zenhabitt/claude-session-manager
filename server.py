@@ -1455,6 +1455,7 @@ function updateScrollButton() {
     btn.classList.remove('show');
   } else {
     btn.classList.add('show');
+    window._autoScroll = false;
   }
 }
 
