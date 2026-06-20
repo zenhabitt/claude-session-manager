@@ -529,6 +529,7 @@ I18N = {
         "refresh": "刷新",
         "newChat": "新对话",
         "newChatStarted": "已在新终端中打开",
+        "newSessionPlaceholder": "新会话",
         "resume": "继续对话",
         "resumed": "已在新终端中打开",
     },
@@ -587,6 +588,7 @@ I18N = {
         "refresh": "Refresh",
         "newChat": "New Chat",
         "newChatStarted": "Opened in new terminal",
+        "newSessionPlaceholder": "New Session",
         "resume": "Continue",
         "resumed": "Opened in new terminal",
     },
@@ -1067,13 +1069,25 @@ async function refreshData() {
   sessions = await api('/api/sessions');
   trashItems = await api('/api/trash');
 
+  // Remove placeholder if a real new session now exists (has messages or title)
+  const placeholder = sessions.find(s => s._placeholder);
+  if (placeholder) {
+    const realNew = sessions.find(s => !s._placeholder && s.mtime > placeholder.mtime - 5);
+    if (realNew && realNew.title !== t('newSessionPlaceholder')) {
+      sessions = sessions.filter(s => !s._placeholder);
+      // Select the real session that replaced the placeholder
+      if (selectedId === '__placeholder__') {
+        selectedId = realNew.id;
+      }
+    }
+  }
+
   if (currentTab === 'list') {
     document.getElementById('session-count').textContent = sessions.length;
   }
   updateTrashBadge();
   renderList();
 
-  // Refresh detail panel if a session is selected
   if (selectedId && currentTab === 'list') {
     selectSession(selectedId);
   } else if (selectedId && currentTab === 'trash') {
@@ -1407,6 +1421,27 @@ async function newSession() {
     const res = await api('/api/new-session', 'POST');
     if (res.success) {
       toast(t('newChatStarted'), 'success');
+      // Insert placeholder at top of session list
+      sessions.unshift({
+        id: '__placeholder__',
+        title: t('newSessionPlaceholder'),
+        active: true,
+        date: t('newSessionPlaceholder'),
+        messages: 0,
+        turns: 0,
+        tokens: 0,
+        size: '—',
+        size_bytes: 0,
+        mtime: Date.now() / 1000,
+        last_time: '',
+        model: '',
+        cwd: '',
+        branch: '',
+        project: '~',
+        _placeholder: true,
+      });
+      document.getElementById('session-count').textContent = sessions.length;
+      renderList();
     } else {
       toast(res.message || 'Failed', 'error');
     }
