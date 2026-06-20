@@ -217,8 +217,8 @@ if [ -z "$PYTHON" ]; then
     exit 1
 fi
 
-# Start server (CSM_NO_BROWSER tells server.py not to auto-open browser)
-export CSM_NO_BROWSER=1
+# Start server (server.py will auto-open browser)
+
 nohup "$PYTHON" "$SERVER_PY" > "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 
@@ -239,9 +239,7 @@ if [ "$SERVER_READY" = false ]; then
     exit 1
 fi
 
-# Open browser (exactly once)
-open "$URL"
-
+# Browser auto-opened by server.py
 # Stay alive — monitor server process
 while kill -0 $SERVER_PID 2>/dev/null; do
     sleep 3
