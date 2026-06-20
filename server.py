@@ -770,7 +770,7 @@ FRONTEND = r"""<!DOCTYPE html>
     margin-bottom: 10px; word-break: break-word;
   }
   .detail-top-row {
-    display: flex; align-items: center; gap: 12px;
+    display: flex; align-items: flex-start; gap: 12px;
   }
   .detail-top-row .info-details { flex: 1; min-width: 0; cursor: default; }
   .detail-top-row .detail-actions {
