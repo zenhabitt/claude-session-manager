@@ -876,8 +876,8 @@ FRONTEND = r"""<!DOCTYPE html>
   .conversation-preview::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
   .scroll-to-bottom {
-    position: sticky; bottom: 12px; display: none; margin: 0 auto;
-    padding: 5px 14px; border-radius: 16px; border: 1px solid var(--border);
+    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+    display: none; padding: 5px 14px; border-radius: 16px; border: 1px solid var(--border);
     background: var(--surface); color: var(--accent); font-size: 11px;
     font-family: var(--font); cursor: pointer; z-index: 10;
     box-shadow: 0 2px 8px rgba(0,0,0,0.2);
@@ -1396,6 +1396,7 @@ async function selectSession(id) {
         </div>
       </div>
       <div class="conversation-preview" id="conversation-preview" onscroll="updateScrollButton()">${t('loading')}</div>
+      <button type="button" class="scroll-to-bottom" id="scroll-to-bottom-btn" onclick="scrollToLatest()">↓ ${t('scrollToBottom')}</button>
     </div>
   `;
 
@@ -1411,7 +1412,7 @@ async function selectSession(id) {
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
         ${renderParts(m.parts || [])}
       </div>
-    `).join('') + `<button type="button" class="scroll-to-bottom" id="scroll-to-bottom-btn" onclick="scrollToLatest()">↓ ${t('scrollToBottom')}</button>`;
+    `).join('');
     // Auto-scroll to bottom on initial load
     preview.scrollTop = preview.scrollHeight;
     window._autoScroll = true;
