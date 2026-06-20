@@ -239,11 +239,10 @@ if [ "$SERVER_READY" = false ]; then
     exit 1
 fi
 
-# Open browser via AppleScript (webbrowser may fail in background context)
-sleep 1
-osascript -e "tell application \"Safari\" to open location \"$URL\"" 2>/dev/null || \
-osascript -e "tell application \"Google Chrome\" to open location \"$URL\"" 2>/dev/null || \
-open "$URL" 2>/dev/null || true
+export CSM_NO_BROWSER=1
+
+# Open browser from launcher (has GUI context unlike background server.py)
+open "$URL"
 
 # Stay alive — monitor server process
 while kill -0 $SERVER_PID 2>/dev/null; do
