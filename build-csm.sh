@@ -182,25 +182,30 @@ ensure_min_lifetime() {
     fi
 }
 
-# ── Case 1: Server already running → focus browser, wait, exit ──
+LOCKFILE="/tmp/csm-launcher.lock"
+
+# ── Case 1: Server already running → open browser, wait, exit ──
 if curl -s --max-time 2 "$URL" > /dev/null 2>&1; then
-    # Bring browser to front — activates the last-used window (our session manager tab)
-    osascript -e '
-      tell application "System Events"
-        set browsers to {"Google Chrome", "Safari", "Arc", "Brave Browser", "Microsoft Edge"}
-        repeat with b in browsers
-          if exists application b then
-            tell application b to activate
-            exit repeat
-          end if
-        end repeat
-      end tell
-    ' 2>/dev/null
+    open "$URL" 2>/dev/null
     ensure_min_lifetime
     exit 0
 fi
 
 # ── Case 2: Start fresh ──────────────────────────────────────────
+
+# Prevent double-launch: if another launcher is starting, wait for it
+if [ -f "$LOCKFILE" ]; then
+    for i in $(seq 1 10); do
+        sleep 0.5
+        if curl -s --max-time 1 "$URL" > /dev/null 2>&1; then
+            open "$URL" 2>/dev/null
+            ensure_min_lifetime
+            exit 0
+        fi
+    done
+fi
+touch "$LOCKFILE"
+trap "rm -f $LOCKFILE" EXIT
 
 # Find Python 3
 PYTHON=""
@@ -217,8 +222,7 @@ if [ -z "$PYTHON" ]; then
     exit 1
 fi
 
-# Start server (server.py will auto-open browser)
-
+export CSM_NO_BROWSER=1
 nohup "$PYTHON" "$SERVER_PY" > "$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 
@@ -239,9 +243,7 @@ if [ "$SERVER_READY" = false ]; then
     exit 1
 fi
 
-export CSM_NO_BROWSER=1
-
-# Open browser from launcher (has GUI context unlike background server.py)
+# Open browser (only once, from launcher which has GUI context)
 open "$URL"
 
 # Stay alive — monitor server process
