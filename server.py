@@ -234,8 +234,9 @@ class SessionManager:
 
     @staticmethod
     def get_preview(filepath, max_messages=400):
-        """Return structured conversation preview with typed content parts."""
-        messages = []
+        """Return the LAST N messages from the conversation (newest at end)."""
+        from collections import deque
+        messages = deque(maxlen=max_messages)
         with open(filepath, "r", encoding="utf-8") as f:
             for line in f:
                 try:
@@ -281,7 +282,6 @@ class SessionManager:
                             parts.append({"type": "thinking", "content": part.get("thinking", "")[:300]})
                         elif pt == "tool_use":
                             inp = part.get("input", {})
-                            # Simplify tool input for display
                             inp_simple = {}
                             for k, v in inp.items():
                                 if isinstance(v, str) and len(v) > 200:
@@ -303,9 +303,7 @@ class SessionManager:
                 if role and parts:
                     messages.append({"role": role, "parts": parts})
 
-                if len(messages) >= max_messages * 2:
-                    break
-        return messages
+        return list(messages)
 
     # ── Trash Operations ──────────────────────────────────────────
 
