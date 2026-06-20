@@ -1418,7 +1418,6 @@ async function selectSession(id) {
     window._lastLine = lastMsg ? (lastMsg._line || 0) : 0;
     // Auto-scroll to bottom on initial load
     preview.scrollTop = preview.scrollHeight;
-    window._autoScroll = true;
   } catch (e) {
     document.getElementById('conversation-preview').innerHTML = `<p style="color:var(--danger);padding:20px">${t('loadFailed')}</p>`;
   }
@@ -1434,7 +1433,7 @@ async function refreshPreview(id) {
     // Update last line tracker
     window._lastLine = msgs[msgs.length - 1]._line || afterLine;
     // Append only — never rebuild, never disrupt scroll
-    const atBottom = window._autoScroll;
+    const btn = document.getElementById('scroll-to-bottom-btn'); const atBottom = !btn || !btn.classList.contains('show');
     container.insertAdjacentHTML('beforeend', msgs.map(m => `
       <div class="msg ${m.role}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
@@ -1455,7 +1454,6 @@ function updateScrollButton() {
     btn.classList.remove('show');
   } else {
     btn.classList.add('show');
-    window._autoScroll = false;
   }
 }
 
@@ -1463,7 +1461,6 @@ function scrollToLatest() {
   const container = document.getElementById('conversation-preview');
   if (container) {
     container.scrollTop = container.scrollHeight;
-    window._autoScroll = true;
     updateScrollButton();
   }
 }
