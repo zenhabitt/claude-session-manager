@@ -607,11 +607,11 @@ FRONTEND = r"""<!DOCTYPE html>
 <title>Claude Session Manager</title>
 <style>
   :root {
-    --bg: #1a1b1e; --surface: #25262b; --surface2: #2c2e33; --border: #373a40;
-    --text: #c1c2c5; --text-dim: #909296; --text-bright: #e0e0e0;
-    --accent: #6c8aff; --accent-hover: #8ba3ff;
-    --danger: #ff6b6b; --danger-hover: #ff8787; --danger-bg: rgba(255,107,107,0.08);
-    --success: #69db7c; --warn: #ffd43b;
+    --bg: #1a1918; --surface: #242321; --surface2: #2d2b28; --border: #383532;
+    --text: #c4bbb4; --text-dim: #877f76; --text-bright: #e8e0d8;
+    --accent: #c4944a; --accent-hover: #d4a55a;
+    --danger: #c46a5e; --danger-hover: #d47a6e; --danger-bg: rgba(196,106,94,0.1);
+    --success: #7ea882; --warn: #d4a84b;
     --radius: 8px;
     --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
     --mono: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
@@ -705,16 +705,16 @@ FRONTEND = r"""<!DOCTYPE html>
   .session-card:hover { background: var(--surface2); }
   .session-card.selected { background: var(--surface2); border-color: var(--accent); }
   .session-card.active {
-    border-color: rgba(105,219,124,0.25);
+    border-color: rgba(196,148,74,0.3);
     animation: breathe 2.5s ease-in-out infinite;
   }
   @keyframes breathe {
-    0%, 100% { box-shadow: 0 0 0 rgba(105,219,124,0); }
-    50% { box-shadow: 0 0 8px rgba(105,219,124,0.15); }
+    0%, 100% { box-shadow: 0 0 0 rgba(196,148,74,0); }
+    50% { box-shadow: 0 0 10px rgba(196,148,74,0.2); }
   }
   .session-card .active-dot {
     display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: var(--success); margin-right: 4px; vertical-align: middle;
+    background: var(--accent); margin-right: 4px; vertical-align: middle;
     animation: breathe-dot 1.5s ease-in-out infinite;
   }
   @keyframes breathe-dot {
@@ -730,7 +730,7 @@ FRONTEND = r"""<!DOCTYPE html>
     font-size: 11px; color: var(--text-dim); display: flex; gap: 10px; flex-wrap: wrap;
   }
   .session-card .project-tag {
-    font-size: 10px; background: rgba(108,138,255,0.12); color: var(--accent);
+    font-size: 10px; background: rgba(196,148,74,0.12); color: var(--accent);
     padding: 1px 6px; border-radius: 3px; max-width: 180px;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
@@ -857,15 +857,15 @@ FRONTEND = r"""<!DOCTYPE html>
   .part-text blockquote { border-left: 2px solid var(--text-dim); padding-left: 8px; color: var(--text-dim); margin: 4px 0; }
 
   .part-thinking { margin: 2px 0; }
-  .part-thinking summary { cursor: pointer; color: #b0a0d0; font-size: 10px; font-weight: 500; user-select: none; opacity: 0.7; }
-  .part-thinking summary:hover { opacity: 1; }
-  .part-thinking .thinking-content { color: #a098c0; font-style: italic; font-size: 11px; padding: 4px 8px; border-left: 2px solid #6a5acd; margin-top: 2px; }
+  .part-thinking summary { cursor: pointer; color: var(--text-dim); font-size: 10px; font-weight: 500; user-select: none; opacity: 0.7; }
+  .part-thinking summary:hover { opacity: 1; color: var(--text); }
+  .part-thinking .thinking-content { color: var(--text-dim); font-style: italic; font-size: 11px; padding: 4px 8px; border-left: 2px solid var(--accent); margin-top: 2px; }
 
-  .part-tool { background: rgba(108,138,255,0.06); border: 1px solid rgba(108,138,255,0.15); border-radius: 4px; padding: 6px 10px; margin: 4px 0; font-family: var(--mono); font-size: 11px; }
+  .part-tool { background: rgba(196,148,74,0.06); border: 1px solid rgba(196,148,74,0.15); border-radius: 4px; padding: 6px 10px; margin: 4px 0; font-family: var(--mono); font-size: 11px; }
   .part-tool .tool-name { color: var(--accent); font-weight: 600; }
   .part-tool .tool-input { color: var(--text-dim); margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
-  .part-tool-result { background: rgba(108,138,255,0.04); border: 1px solid rgba(108,138,255,0.1); border-radius: 4px; padding: 4px 10px; margin: 2px 0; font-size: 11px; color: var(--text-dim); max-height: 80px; overflow-y: auto; }
-  .part-tool-result.error { border-color: rgba(255,107,107,0.2); color: var(--danger); }
+  .part-tool-result { background: rgba(196,148,74,0.04); border: 1px solid rgba(196,148,74,0.1); border-radius: 4px; padding: 4px 10px; margin: 2px 0; font-size: 11px; color: var(--text-dim); max-height: 80px; overflow-y: auto; }
+  .part-tool-result.error { border-color: rgba(196,106,94,0.25); color: var(--danger); }
 
   /* ── Modal ── */
   .modal-overlay {
