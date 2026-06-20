@@ -1425,21 +1425,26 @@ async function refreshPreview(id) {
   try {
     const msgs = await api(`/api/sessions/${id}/preview`);
     if (!msgs || msgs.length === 0) return;
-    const existingCount = container.querySelectorAll('.msg').length;
-    if (msgs.length <= existingCount) return;
-    const newMsgs = msgs.slice(existingCount);
-    const atBottom = window._autoScroll;
-    // Keep only latest 400 messages in DOM too (sliding window)
-    const allMsgs = container.querySelectorAll('.msg');
-    while (allMsgs.length + newMsgs.length > 400 && allMsgs.length > 0) {
-      allMsgs[0].remove();
+    const existingEls = container.querySelectorAll('.msg');
+    // Compare last 3 messages: if identical, nothing changed
+    if (existingEls.length > 0 && msgs.length > 0) {
+      let same = true;
+      for (let i = 1; i <= 3; i++) {
+        if (i > existingEls.length || i > msgs.length) break;
+        const domText = existingEls[existingEls.length - i].textContent.trim();
+        const apiText = renderParts(msgs[msgs.length - i].parts || []).replace(/<[^>]*>/g,'').trim();
+        if (domText !== apiText) { same = false; break; }
+      }
+      if (same) return;
     }
-    container.insertAdjacentHTML('beforeend', newMsgs.map(m => `
+    // Content changed — full rebuild
+    const atBottom = window._autoScroll;
+    container.innerHTML = msgs.map(m => `
       <div class="msg ${m.role}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
         ${renderParts(m.parts || [])}
       </div>
-    `).join(''));
+    `).join('');
     if (atBottom) container.scrollTop = container.scrollHeight;
     updateScrollButton();
   } catch (e) { console.error('refreshPreview failed:', e); }
