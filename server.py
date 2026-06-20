@@ -233,12 +233,14 @@ class SessionManager:
         }
 
     @staticmethod
-    def get_preview(filepath, max_messages=400):
-        """Return the LAST N messages from the conversation (newest at end)."""
+    def get_preview(filepath, max_messages=400, after_line=0):
+        """Return messages from the conversation. If after_line>0, only messages after that line."""
         from collections import deque
         messages = deque(maxlen=max_messages)
         with open(filepath, "r", encoding="utf-8") as f:
-            for line in f:
+            for line_no, line in enumerate(f, 1):
+                if after_line > 0 and line_no <= after_line:
+                    continue
                 try:
                     d = json.loads(line)
                 except (json.JSONDecodeError, ValueError):
@@ -301,7 +303,7 @@ class SessionManager:
                     role = "title"
 
                 if role and parts:
-                    messages.append({"role": role, "parts": parts})
+                    messages.append({"role": role, "parts": parts, "_line": line_no})
 
         return list(messages)
 
@@ -1411,6 +1413,9 @@ async function selectSession(id) {
         ${renderParts(m.parts || [])}
       </div>
     `).join('');
+    // Track last line number for incremental refresh
+    const lastMsg = msgs[msgs.length - 1];
+    window._lastLine = lastMsg ? (lastMsg._line || 0) : 0;
     // Auto-scroll to bottom on initial load
     preview.scrollTop = preview.scrollHeight;
     window._autoScroll = true;
@@ -1423,38 +1428,14 @@ async function refreshPreview(id) {
   const container = document.getElementById('conversation-preview');
   if (!container) return;
   try {
-    const msgs = await api(`/api/sessions/${id}/preview`);
+    const afterLine = window._lastLine || 0;
+    const msgs = await api(`/api/sessions/${id}/preview?after=${afterLine}`);
     if (!msgs || msgs.length === 0) return;
-    const existingEls = container.querySelectorAll('.msg');
-    if (existingEls.length === 0) return;
-    // Find where DOM left off — match last rendered message text against API
-    const lastDomText = existingEls[existingEls.length - 1].textContent.trim();
-    let startIdx = 0;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const apiText = renderParts(msgs[i].parts || []).replace(/<[^>]*>/g,'').trim();
-      if (apiText === lastDomText) { startIdx = i + 1; break; }
-    }
-    if (startIdx === 0) {
-      // Text match failed — check if content actually changed
-      const lastApiText = renderParts(msgs[msgs.length - 1].parts || []).replace(/<[^>]*>/g,'').trim();
-      if (lastApiText === lastDomText) return; // nothing new
-      // Content changed but old DOM msg fell off deque — full rebuild needed
-      const atBottom2 = window._autoScroll;
-      container.innerHTML = msgs.map(m => `
-        <div class="msg ${m.role}">
-          <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
-          ${renderParts(m.parts || [])}
-        </div>
-      `).join('');
-      if (atBottom2) container.scrollTop = container.scrollHeight;
-      updateScrollButton();
-      return;
-    }
-    const newMsgs = msgs.slice(startIdx);
-    if (newMsgs.length === 0) return;
-    // Append only — no scroll disruption for reading user
+    // Update last line tracker
+    window._lastLine = msgs[msgs.length - 1]._line || afterLine;
+    // Append only — never rebuild, never disrupt scroll
     const atBottom = window._autoScroll;
-    container.insertAdjacentHTML('beforeend', newMsgs.map(m => `
+    container.insertAdjacentHTML('beforeend', msgs.map(m => `
       <div class="msg ${m.role}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
         ${renderParts(m.parts || [])}
@@ -1791,8 +1772,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json(SessionManager.list_all())
         elif path.startswith("/api/sessions/") and path.endswith("/preview"):
             session_id = path.rsplit("/", 2)[-2]
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            after_line = int(params.get("after", [0])[0])
             filepath = self._find_session_path(session_id)
-            return self._json(SessionManager.get_preview(filepath)) if filepath else self._error(404, "Not found")
+            return self._json(SessionManager.get_preview(filepath, after_line=after_line)) if filepath else self._error(404, "Not found")
         elif path == "/api/trash":
             return self._json(SessionManager.list_trash())
         else:
