@@ -754,7 +754,7 @@ FRONTEND = r"""<!DOCTYPE html>
   }
   .session-card .active-dot {
     display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: var(--accent); margin-right: 4px; vertical-align: middle;
+    background: #69db7c; margin-right: 4px; vertical-align: middle;
     animation: breathe-dot 1.5s ease-in-out infinite;
   }
   @keyframes breathe-dot {
