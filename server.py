@@ -1777,8 +1777,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if not filepath:
             return self._error(404, f"Session not found: {session_id}")
 
-        meta = SessionManager._parse_metadata(filepath)
-        cwd = meta.get("cwd") or os.path.expanduser("~")
+        # Derive cwd from the project directory, not from JSONL (last cwd may be wrong)
+        import re
+        proj_dir = Path(filepath).parent.name  # e.g. "-Users-zhanghaotian"
+        # Reverse of _decode_project: -Users-zhanghaotian → /Users/zhanghaotian
+        cwd = "/" + proj_dir.lstrip("-").replace("-", "/")
+        if not os.path.isdir(cwd):
+            cwd = os.path.expanduser("~")
 
         # Build AppleScript to open Terminal and run claude --resume
         script = f'''
