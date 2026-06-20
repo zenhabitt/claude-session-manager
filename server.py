@@ -301,7 +301,7 @@ class SessionManager:
                     role = "title"
 
                 if role and parts:
-                    messages.append({"role": role, "parts": parts})
+                    messages.append({"role": role, "parts": parts, "_uuid": d.get("uuid", "")})
 
         return list(messages)
 
@@ -1406,7 +1406,7 @@ async function selectSession(id) {
       return;
     }
     preview.innerHTML = msgs.map(m => `
-      <div class="msg ${m.role}">
+      <div class="msg ${m.role}" data-uuid="${m._uuid || ''}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
         ${renderParts(m.parts || [])}
       </div>
@@ -1425,17 +1425,26 @@ async function refreshPreview(id) {
   try {
     const msgs = await api(`/api/sessions/${id}/preview`);
     if (!msgs || msgs.length === 0) return;
-    const existingCount = container.querySelectorAll('.msg').length;
-    if (msgs.length <= existingCount) return;
-    const newMsgs = msgs.slice(existingCount);
+    // Find last rendered message by UUID
+    const existingEls = container.querySelectorAll('.msg');
+    const lastUuid = existingEls.length > 0 ? existingEls[existingEls.length - 1].dataset.uuid : null;
+    let startIdx = 0;
+    if (lastUuid) {
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        if (msgs[i]._uuid === lastUuid) { startIdx = i + 1; break; }
+      }
+    }
+    if (startIdx === 0 && existingEls.length > 0 && msgs.length === existingEls.length) return;
+    const newMsgs = msgs.slice(startIdx);
+    if (newMsgs.length === 0) return;
     const atBottom = window._autoScroll;
-    // Keep only latest 400 messages in DOM too (sliding window)
+    // Sliding window: keep max 400 in DOM
     const allMsgs = container.querySelectorAll('.msg');
     while (allMsgs.length + newMsgs.length > 400 && allMsgs.length > 0) {
       allMsgs[0].remove();
     }
     container.insertAdjacentHTML('beforeend', newMsgs.map(m => `
-      <div class="msg ${m.role}">
+      <div class="msg ${m.role}" data-uuid="${m._uuid || ''}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
         ${renderParts(m.parts || [])}
       </div>
