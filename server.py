@@ -1453,7 +1453,6 @@ function updateScrollButton() {
   const atBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 50;
   if (atBottom) {
     btn.classList.remove('show');
-    window._autoScroll = true;
   } else {
     btn.classList.add('show');
   }
