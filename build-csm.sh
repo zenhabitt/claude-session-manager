@@ -239,7 +239,12 @@ if [ "$SERVER_READY" = false ]; then
     exit 1
 fi
 
-# Browser auto-opened by server.py
+# Open browser via AppleScript (webbrowser may fail in background context)
+sleep 1
+osascript -e "tell application \"Safari\" to open location \"$URL\"" 2>/dev/null || \
+osascript -e "tell application \"Google Chrome\" to open location \"$URL\"" 2>/dev/null || \
+open "$URL" 2>/dev/null || true
+
 # Stay alive — monitor server process
 while kill -0 $SERVER_PID 2>/dev/null; do
     sleep 3
