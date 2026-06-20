@@ -219,7 +219,7 @@ class SessionManager:
 
         title = ai_title or first_user_msg or "(empty conversation)"
         if len(title) > 80:
-            title = title[:77] + "…"
+            title = title[:79] + "…"
 
         return {
             "title": title,
@@ -285,7 +285,7 @@ class SessionManager:
                             inp_simple = {}
                             for k, v in inp.items():
                                 if isinstance(v, str) and len(v) > 200:
-                                    inp_simple[k] = v[:197] + "…"
+                                    inp_simple[k] = v[:199] + "…"
                                 else:
                                     inp_simple[k] = v
                             parts.append({
