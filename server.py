@@ -130,25 +130,15 @@ class SessionManager:
                     s["active"] = False
             n = 0
             now = time.time()
-            # Sort by mtime descending — newly created sessions come first.
-            # Only match sessions written to in the last 60s (zombie processes
-            # that match no session won't activate stale old sessions).
+            # Sort by mtime. Only match sessions with mtime < 60s
+            # (active claude processes write continuously; stale sessions don't).
             candidates = sorted(sessions, key=lambda s: -s["mtime"])
-            if bare_dirs:
-                for s in candidates:
-                    if s["id"] not in resumed_ids and s.get("project_dir", "") in bare_dirs \
-                       and (now - s["mtime"]) < 60:
-                        s["active"] = True
-                        n += 1
-                        if n >= bare_count:
-                            break
-            if n == 0:
-                for s in candidates:
-                    if s["id"] not in resumed_ids and (now - s["mtime"]) < 60:
-                        s["active"] = True
-                        n += 1
-                        if n >= bare_count:
-                            break
+            for s in candidates:
+                if s["id"] not in resumed_ids and (now - s["mtime"]) < 60:
+                    s["active"] = True
+                    n += 1
+                    if n >= bare_count:
+                        break
 
         # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
