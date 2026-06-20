@@ -1426,25 +1426,25 @@ async function refreshPreview(id) {
     const msgs = await api(`/api/sessions/${id}/preview`);
     if (!msgs || msgs.length === 0) return;
     const existingEls = container.querySelectorAll('.msg');
-    // Compare last 3 messages: if identical, nothing changed
-    if (existingEls.length > 0 && msgs.length > 0) {
-      let same = true;
-      for (let i = 1; i <= 3; i++) {
-        if (i > existingEls.length || i > msgs.length) break;
-        const domText = existingEls[existingEls.length - i].textContent.trim();
-        const apiText = renderParts(msgs[msgs.length - i].parts || []).replace(/<[^>]*>/g,'').trim();
-        if (domText !== apiText) { same = false; break; }
-      }
-      if (same) return;
+    if (existingEls.length === 0) return;
+    // Find where DOM left off — match last rendered message text against API
+    const lastDomText = existingEls[existingEls.length - 1].textContent.trim();
+    let startIdx = 0;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const apiText = renderParts(msgs[i].parts || []).replace(/<[^>]*>/g,'').trim();
+      if (apiText === lastDomText) { startIdx = i + 1; break; }
     }
-    // Content changed — full rebuild
+    if (startIdx === 0 && existingEls.length === msgs.length) return;
+    const newMsgs = startIdx > 0 ? msgs.slice(startIdx) : msgs.slice(existingEls.length);
+    if (newMsgs.length === 0) return;
+    // Append only — no scroll disruption for reading user
     const atBottom = window._autoScroll;
-    container.innerHTML = msgs.map(m => `
+    container.insertAdjacentHTML('beforeend', newMsgs.map(m => `
       <div class="msg ${m.role}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
         ${renderParts(m.parts || [])}
       </div>
-    `).join('');
+    `).join(''));
     if (atBottom) container.scrollTop = container.scrollHeight;
     updateScrollButton();
   } catch (e) { console.error('refreshPreview failed:', e); }
