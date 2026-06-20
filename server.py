@@ -1787,7 +1787,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             session_id = path.rsplit("/", 2)[-2]
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
-            after_line = int(params.get("after", [0])[0])
+            try: after_line = int(params.get("after", [0])[0])
+            except (ValueError, IndexError): after_line = 0
             filepath = self._find_session_path(session_id)
             return self._json(SessionManager.get_preview(filepath, after_line=after_line)) if filepath else self._error(404, "Not found")
         elif path == "/api/trash":
