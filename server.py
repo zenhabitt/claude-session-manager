@@ -122,25 +122,24 @@ class SessionManager:
             info["active"] = session_id in resumed_ids
             sessions.append(info)
 
-        # Sort by last message time (stable — not polluted by background file writes)
-        sessions.sort(key=lambda s: s.get("last_time") or "", reverse=True)
-
-        # Bare claude: match by PROJECT DIRECTORY (not global mtime).
+        # Bare claude: match by PROJECT DIRECTORY. Sort by mtime within project
+        # so brand-new sessions (no messages yet, mtime=now) are picked first.
         if bare_count > 0:
             for s in sessions:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
+            # Sort by mtime descending — newly created sessions come first
+            candidates = sorted(sessions, key=lambda s: -s["mtime"])
             if bare_dirs:
-                for s in sessions:
+                for s in candidates:
                     if s["id"] not in resumed_ids and s.get("project_dir", "") in bare_dirs:
                         s["active"] = True
                         n += 1
                         if n >= bare_count:
                             break
-            # Fallback: if no project match, use most recent by last_time
             if n == 0:
-                for s in sessions:
+                for s in candidates:
                     if s["id"] not in resumed_ids:
                         s["active"] = True
                         n += 1
