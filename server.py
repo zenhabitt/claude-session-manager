@@ -479,6 +479,7 @@ I18N = {
         "restart": "重启",
         "restartConfirmTitle": "确认重启",
         "restartConfirmMsg": "这会先停止当前会话，再重新启动。",
+        "confirmRestartBtn": "重启会话",
         "restarted": "正在重启…",
         "stopConfirmTitle": "确认停止",
         "stopConfirmMsg": "这会终止该会话正在运行的 Claude 进程。<br>会话文件不会被删除，你稍后可以继续对话。",
@@ -545,6 +546,7 @@ I18N = {
         "restart": "Restart",
         "restartConfirmTitle": "Restart Session",
         "restartConfirmMsg": "This will stop the current session and restart it.",
+        "confirmRestartBtn": "Restart Session",
         "restarted": "Restarting…",
         "stopConfirmTitle": "Stop Session",
         "stopConfirmMsg": "This will terminate the running Claude process.<br>The session file will NOT be deleted — you can resume it later.",
@@ -1589,7 +1591,7 @@ async function resumeSession(id) {
 function askRestartSession(id) {
   const s = sessions.find(s => s.id === id);
   const body = `${t('restartConfirmMsg')}<br><br><b class="highlight">${esc(s?.title || id)}</b>`;
-  showModal(t('restartConfirmTitle'), body, t('restarted'), 'danger', async () => {
+  showModal(t('restartConfirmTitle'), body, t('confirmRestartBtn'), 'danger', async () => {
     closeModal();
     try {
       const res = await api(`/api/sessions/${id}/restart`, 'POST');
