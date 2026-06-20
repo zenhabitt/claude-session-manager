@@ -219,7 +219,7 @@ class SessionManager:
 
         title = ai_title or first_user_msg or "(empty conversation)"
         if len(title) > 80:
-            title = title[:77] + "..."
+            title = title[:77] + "…"
 
         return {
             "title": title,
@@ -285,7 +285,7 @@ class SessionManager:
                             inp_simple = {}
                             for k, v in inp.items():
                                 if isinstance(v, str) and len(v) > 200:
-                                    inp_simple[k] = v[:197] + "..."
+                                    inp_simple[k] = v[:197] + "…"
                                 else:
                                     inp_simple[k] = v
                             parts.append({
@@ -477,7 +477,7 @@ I18N = {
     "zh": {
         "appTitle": "Claude 会话管理器",
         "sessions": "个会话",
-        "searchPlaceholder": "搜索会话...",
+        "searchPlaceholder": "搜索会话…",
         "sortTime": "时间",
         "sortSize": "大小",
         "sortMessages": "消息数",
@@ -513,7 +513,7 @@ I18N = {
         "lastActive": "最后活动",
         "size": "大小",
         "deletedAt": "删除时间",
-        "loading": "加载中...",
+        "loading": "加载中…",
         "noMessages": "没有找到消息",
         "loadFailed": "加载预览失败",
         "deleted": "已删除",
@@ -538,7 +538,7 @@ I18N = {
     "en": {
         "appTitle": "Claude Session Manager",
         "sessions": "sessions",
-        "searchPlaceholder": "Search sessions...",
+        "searchPlaceholder": "Search sessions…",
         "sortTime": "Time",
         "sortSize": "Size",
         "sortMessages": "Messages",
@@ -574,7 +574,7 @@ I18N = {
         "lastActive": "Last active",
         "size": "Size",
         "deletedAt": "Deleted at",
-        "loading": "Loading...",
+        "loading": "Loading…",
         "noMessages": "No messages found",
         "loadFailed": "Failed to load preview",
         "deleted": "Deleted",
@@ -675,7 +675,7 @@ FRONTEND = r"""<!DOCTYPE html>
   .lang-btn {
     font-size: 11px; padding: 3px 10px; border: 1px solid var(--border);
     border-radius: 4px; background: transparent; color: var(--text-dim);
-    cursor: pointer; font-family: var(--font); transition: all .15s;
+    cursor: pointer; font-family: var(--font); transition: background .15s, border-color .15s, color .15s, opacity .15s;
   }
   .lang-btn:hover { color: var(--text); border-color: var(--text-dim); }
   .lang-btn:active { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -692,7 +692,7 @@ FRONTEND = r"""<!DOCTYPE html>
   .search-bar input {
     width: 100%; padding: 8px 12px; border: 1px solid var(--border);
     border-radius: 6px; background: var(--bg); color: var(--text);
-    font-size: 13px; font-family: var(--font); outline: none; transition: border-color .15s;
+    font-size: 13px; font-family: var(--font); outline: none; box-shadow: 0 0 0 2px var(--accent); transition: border-color .15s;
   }
   .search-bar input:focus { border-color: var(--accent); }
   .search-bar input::placeholder { color: var(--text-dim); }
@@ -703,7 +703,7 @@ FRONTEND = r"""<!DOCTYPE html>
   .tab-bar button {
     flex: 1; padding: 6px 0; border: none; border-bottom: 2px solid transparent;
     background: transparent; color: var(--text-dim); font-size: 12px;
-    font-family: var(--font); cursor: pointer; transition: all .15s;
+    font-family: var(--font); cursor: pointer; transition: background .15s, border-color .15s, color .15s, opacity .15s;
   }
   .tab-bar button:hover { color: var(--text); }
   .tab-bar button.active {
@@ -720,7 +720,7 @@ FRONTEND = r"""<!DOCTYPE html>
   .sort-bar button {
     padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px;
     background: transparent; color: var(--text-dim); font-size: 11px;
-    cursor: pointer; font-family: var(--font); transition: all .15s;
+    cursor: pointer; font-family: var(--font); transition: background .15s, border-color .15s, color .15s, opacity .15s;
   }
   .sort-bar button:hover { color: var(--text); border-color: var(--text-dim); }
   .sort-bar button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -783,7 +783,7 @@ FRONTEND = r"""<!DOCTYPE html>
     display: flex; align-items: center; gap: 3px;
     padding: 3px 7px; border: 1px solid var(--border); border-radius: 4px;
     background: var(--surface); color: var(--text-dim); font-size: 11px;
-    cursor: pointer; font-family: var(--font); transition: all .12s; white-space: nowrap;
+    cursor: pointer; font-family: var(--font); transition: background .12s, border-color .12s, color .12s, opacity .12s; white-space: nowrap;
   }
   .card-btn:hover { color: var(--text); border-color: var(--text-dim); }
   .card-btn.danger { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
@@ -818,7 +818,7 @@ FRONTEND = r"""<!DOCTYPE html>
   }
   .info-summary {
     font-size: 16px; font-weight: 600; color: var(--text-bright);
-    cursor: pointer; user-select: none; outline: none;
+    cursor: pointer; user-select: none; outline: none; box-shadow: 0 0 0 2px var(--accent);
     word-break: break-word; white-space: normal;
     margin-bottom: 6px;
     display: flex; align-items: center; gap: 8px;
@@ -850,7 +850,7 @@ FRONTEND = r"""<!DOCTYPE html>
   .btn {
     display: inline-flex; align-items: center; gap: 5px;
     padding: 6px 14px; border-radius: 5px; border: 1px solid var(--border);
-    font-size: 12px; font-family: var(--font); cursor: pointer; transition: all .12s;
+    font-size: 12px; font-family: var(--font); cursor: pointer; transition: background .12s, border-color .12s, color .12s, opacity .12s;
     background: transparent; color: var(--text); white-space: nowrap;
   }
   .btn:hover { background: var(--surface2); }
@@ -943,11 +943,11 @@ FRONTEND = r"""<!DOCTYPE html>
 <header>
   <h1>▸ <span id="app-title">Claude Session Manager</span></h1>
   <div class="header-right">
-    <button class="lang-btn" onclick="newSession()" title="New chat" style="border-color:var(--accent);color:var(--accent)">+ <span data-i18n="newChat">New Chat</span></button>
-    <button class="lang-btn" id="refresh-btn" onclick="refreshData()" title="Refresh">&#8635; <span data-i18n="refresh">Refresh</span></button>
+    <button type="button" class="lang-btn" onclick="newSession()" title="New chat" style="border-color:var(--accent);color:var(--accent)">+ <span data-i18n="newChat">New Chat</span></button>
+    <button type="button" class="lang-btn" id="refresh-btn" onclick="refreshData()" title="Refresh">&#8635; <span data-i18n="refresh">Refresh</span></button>
     <div class="header-stats"><span id="session-count">0</span> <span id="sessions-label">sessions</span></div>
-    <button class="lang-btn" id="theme-btn" onclick="toggleTheme()" title="Theme">&#9788;</button>
-    <button class="lang-btn" id="lang-btn" onclick="toggleLang()">En</button>
+    <button type="button" class="lang-btn" id="theme-btn" onclick="toggleTheme()" title="Theme">&#9788;</button>
+    <button type="button" class="lang-btn" id="lang-btn" onclick="toggleLang()">En</button>
   </div>
 </header>
 
@@ -955,14 +955,14 @@ FRONTEND = r"""<!DOCTYPE html>
   <!-- Left Panel -->
   <div class="panel-left">
     <div class="search-bar">
-      <input type="text" id="search" data-i18n-placeholder="searchPlaceholder"
+      <input type="text" id="search" name="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder"
              oninput="renderList()" autofocus>
     </div>
     <div class="tab-bar">
-      <button class="active" data-tab="list" onclick="switchTab('list')">
+      <button type="button" class="active" data-tab="list" onclick="switchTab('list')">
         <span data-i18n="listTab">Sessions</span>
       </button>
-      <button data-tab="trash" onclick="switchTab('trash')">
+      <button type="button" data-tab="trash" onclick="switchTab('trash')">
         <span data-i18n="trashTab">Trash</span>
         <span class="badge" id="trash-badge" style="display:none">0</span>
       </button>
@@ -985,8 +985,8 @@ FRONTEND = r"""<!DOCTYPE html>
     <h3 id="modal-title">Confirm</h3>
     <p id="modal-msg"></p>
     <div class="modal-actions">
-      <button class="btn" id="modal-cancel" onclick="closeModal()"><span data-i18n="cancel">Cancel</span></button>
-      <button class="btn btn-danger" id="modal-confirm" onclick="modalCallback()"><span data-i18n="confirmDeleteBtn">Move to Trash</span></button>
+      <button type="button" class="btn" id="modal-cancel" onclick="closeModal()"><span data-i18n="cancel">Cancel</span></button>
+      <button type="button" class="btn btn-danger" id="modal-confirm" onclick="modalCallback()"><span data-i18n="confirmDeleteBtn">Move to Trash</span></button>
     </div>
   </div>
 </div>
@@ -1220,7 +1220,7 @@ function renderList() {
           <span class="project-tag">${esc(s.project)}</span>
         </div>
         <div class="card-actions">
-          <button class="card-btn danger" onclick="event.stopPropagation(); ${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
+          <button type="button" class="card-btn danger" onclick="event.stopPropagation(); ${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
         </div>
       </div>`;
     };
@@ -1231,9 +1231,9 @@ function renderList() {
       html += actives.map(renderCard).join('');
     }
     html += `<div class="sort-bar" id="sort-bar" style="padding:4px 12px 8px">
-      <button class="${sortBy==='time'?'active':''}" data-sort="time" onclick="setSort('time', this)">${t('sortTime')}</button>
-      <button class="${sortBy==='size'?'active':''}" data-sort="size" onclick="setSort('size', this)">${t('sortSize')}</button>
-      <button class="${sortBy==='messages'?'active':''}" data-sort="messages" onclick="setSort('messages', this)">${t('sortMessages')}</button>
+      <button type="button" class="${sortBy==='time'?'active':''}" data-sort="time" onclick="setSort('time', this)">${t('sortTime')}</button>
+      <button type="button" class="${sortBy==='size'?'active':''}" data-sort="size" onclick="setSort('size', this)">${t('sortSize')}</button>
+      <button type="button" class="${sortBy==='messages'?'active':''}" data-sort="messages" onclick="setSort('messages', this)">${t('sortMessages')}</button>
     </div>`;
     html += `<div class="section-header">${t('allSessions')}</div>`;
     html += sorted.map(renderCard).join('');
@@ -1259,8 +1259,8 @@ function renderList() {
             <span style="color:var(--warn)">${t('deletedAt')}: ${item.deleted_at}</span>
           </div>
           <div class="card-actions">
-            <button class="card-btn restore" onclick="event.stopPropagation(); askRestore('${item.id}')">&#8634; ${t('restore')}</button>
-            <button class="card-btn danger" onclick="event.stopPropagation(); askPermDelete('${item.id}')">&#x2715; ${t('permDelete')}</button>
+            <button type="button" class="card-btn restore" onclick="event.stopPropagation(); askRestore('${item.id}')">&#8634; ${t('restore')}</button>
+            <button type="button" class="card-btn danger" onclick="event.stopPropagation(); askPermDelete('${item.id}')">&#x2715; ${t('permDelete')}</button>
           </div>
         </div>`;
       }).join('');
@@ -1378,8 +1378,8 @@ async function selectSession(id) {
           </div>
           </details>
           <div class="detail-actions">
-            ${s.active ? '' : `<button class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
-            <button class="btn btn-danger" id="detail-delete-btn" onclick="${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
+            ${s.active ? '' : `<button type="button" class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
+            <button type="button" class="btn btn-danger" id="detail-delete-btn" onclick="${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
           </div>
         </div>
       </div>
@@ -1456,8 +1456,8 @@ function selectTrashItem(id) {
           <span class="label">${t('deletedAt')}</span><span class="value">${item.deleted_at}</span>
         </div>
         <div class="actions">
-          <button class="btn btn-restore" onclick="askRestore('${item.id}')">&#8634; ${t('restore')}</button>
-          <button class="btn btn-danger" onclick="askPermDelete('${item.id}')">&#x2715; ${t('permDelete')}</button>
+          <button type="button" class="btn btn-restore" onclick="askRestore('${item.id}')">&#8634; ${t('restore')}</button>
+          <button type="button" class="btn btn-danger" onclick="askPermDelete('${item.id}')">&#x2715; ${t('permDelete')}</button>
         </div>
       </div>
       <div class="conversation-preview" style="padding:20px;color:var(--text-dim);text-align:center">
@@ -1959,7 +1959,7 @@ def main():
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n  Shutting down...")
+        print("\n  Shutting down…")
         server.shutdown()
         print("  Goodbye!\n")
 
