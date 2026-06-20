@@ -876,7 +876,7 @@ FRONTEND = r"""<!DOCTYPE html>
   .conversation-preview::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
   .scroll-to-bottom {
-    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+    position: absolute; bottom: 16px; right: 16px;
     display: none; padding: 5px 14px; border-radius: 16px; border: 1px solid var(--border);
     background: var(--surface); color: var(--accent); font-size: 11px;
     font-family: var(--font); cursor: pointer; z-index: 10;
