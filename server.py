@@ -129,6 +129,8 @@ class SessionManager:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
+            # Sort by last_time: most recent messages first (stable, not polluted by background writes)
+            sessions.sort(key=lambda s: s.get("last_time") or "", reverse=True)
             for s in sessions:
                 if s["id"] not in resumed_ids:
                     s["active"] = True
