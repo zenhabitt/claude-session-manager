@@ -129,18 +129,22 @@ class SessionManager:
                 if s["active"] and s["id"] not in resumed_ids:
                     s["active"] = False
             n = 0
-            # Sort by mtime descending — newly created sessions come first
+            now = time.time()
+            # Sort by mtime descending — newly created sessions come first.
+            # Only match sessions written to in the last 60s (zombie processes
+            # that match no session won't activate stale old sessions).
             candidates = sorted(sessions, key=lambda s: -s["mtime"])
             if bare_dirs:
                 for s in candidates:
-                    if s["id"] not in resumed_ids and s.get("project_dir", "") in bare_dirs:
+                    if s["id"] not in resumed_ids and s.get("project_dir", "") in bare_dirs \
+                       and (now - s["mtime"]) < 60:
                         s["active"] = True
                         n += 1
                         if n >= bare_count:
                             break
             if n == 0:
                 for s in candidates:
-                    if s["id"] not in resumed_ids:
+                    if s["id"] not in resumed_ids and (now - s["mtime"]) < 60:
                         s["active"] = True
                         n += 1
                         if n >= bare_count:
