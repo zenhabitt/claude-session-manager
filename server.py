@@ -476,6 +476,10 @@ I18N = {
         "selectHint": "点击左侧会话查看详情",
         "delete": "删除",
         "stop": "停止",
+        "restart": "重启",
+        "restartConfirmTitle": "确认重启",
+        "restartConfirmMsg": "这会先停止当前会话，再重新启动。",
+        "restarted": "正在重启…",
         "stopConfirmTitle": "确认停止",
         "stopConfirmMsg": "这会终止该会话正在运行的 Claude 进程。<br>会话文件不会被删除，你稍后可以继续对话。",
         "confirmStopBtn": "停止进程",
@@ -538,6 +542,10 @@ I18N = {
         "selectHint": "Select a session to view details",
         "delete": "Delete",
         "stop": "Stop",
+        "restart": "Restart",
+        "restartConfirmTitle": "Restart Session",
+        "restartConfirmMsg": "This will stop the current session and restart it.",
+        "restarted": "Restarting…",
         "stopConfirmTitle": "Stop Session",
         "stopConfirmMsg": "This will terminate the running Claude process.<br>The session file will NOT be deleted — you can resume it later.",
         "confirmStopBtn": "Stop Process",
@@ -1377,6 +1385,7 @@ async function selectSession(id) {
           </div>
           </details>
           <div class="detail-actions">
+            ${s.active ? `<button type="button" class="btn" onclick="askRestartSession('${s.id}')" style="color:var(--warn);border-color:var(--warn)">&#8635; ${t('restart')}</button>` : ''}
             ${s.active ? '' : `<button type="button" class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
             <button type="button" class="btn btn-danger" id="detail-delete-btn" onclick="${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
           </div>
@@ -1577,6 +1586,24 @@ async function resumeSession(id) {
 // ═══════════════════════════════════════════════════════════════════
 //  Stop Session
 // ═══════════════════════════════════════════════════════════════════
+function askRestartSession(id) {
+  const s = sessions.find(s => s.id === id);
+  const body = `${t('restartConfirmMsg')}<br><br><b class="highlight">${esc(s?.title || id)}</b>`;
+  showModal(t('restartConfirmTitle'), body, t('restarted'), 'danger', async () => {
+    closeModal();
+    try {
+      const res = await api(`/api/sessions/${id}/restart`, 'POST');
+      if (res.success) {
+        toast(t('restarted'), 'success');
+      } else {
+        toast(res.message || 'Failed', 'error');
+      }
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  });
+}
+
 function askStopSession(id) {
   const s = sessions.find(s => s.id === id);
   const body = `${t('stopConfirmMsg')}<br><br><b class="highlight">${esc(s?.title || id)}</b>`;
@@ -1796,6 +1823,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         elif path.startswith("/api/sessions/") and path.endswith("/stop"):
             session_id = path.rsplit("/", 2)[-2]
             return self._stop_session(session_id)
+        elif path.startswith("/api/sessions/") and path.endswith("/restart"):
+            session_id = path.rsplit("/", 2)[-2]
+            return self._restart_session(session_id)
         elif path == "/api/new-session":
             return self._new_session()
         else:
@@ -1852,6 +1882,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json({"success": True, "message": "Starting new session"})
         except subprocess.CalledProcessError as e:
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
+
+    def _restart_session(self, session_id):
+        """Stop the session then immediately restart it."""
+        self._stop_session(session_id)
+        import time as _time
+        _time.sleep(1)
+        return self._resume_session(session_id)
 
     def _resume_session(self, session_id):
         """Open a new Terminal window to resume a Claude Code session."""
