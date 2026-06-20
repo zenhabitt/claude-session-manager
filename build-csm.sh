@@ -246,11 +246,7 @@ fi
 # Open browser (only once, from launcher which has GUI context)
 open "$URL"
 
-# Stay alive — monitor server process
-while kill -0 $SERVER_PID 2>/dev/null; do
-    sleep 3
-done
-
+# Server runs independently via nohup — we exit, icon leaves Dock
 ensure_min_lifetime
 exit 0
 LAUNCHER
