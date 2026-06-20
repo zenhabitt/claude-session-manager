@@ -130,11 +130,22 @@ class SessionManager:
                     s["active"] = False
             n = 0
             now = time.time()
-            # Sort by mtime. Only match sessions with mtime < 60s
-            # (active claude processes write continuously; stale sessions don't).
-            candidates = sorted(sessions, key=lambda s: -s["mtime"])
+            # Sort: sessions with recent last_time first, brand-new (no messages
+            # but mtime < 10s) next, then by last_time. Background file writes
+            # don't add messages, so last_time is stable.
+            # Sort: sessions with recent last_time first. New sessions (no messages,
+            # mtime < 10s = just created) get priority over old stale sessions.
+            # last_time is stable — background writes don't add messages.
+            def _bare_sort_key(s):
+                lt = s.get("last_time") or ""
+                if lt:
+                    return lt  # ISO string, sorts chronologically
+                if (time.time() - s["mtime"]) < 10:
+                    return "9"  # brand-new — high priority sentinel
+                return "0"      # old empty — last
+            candidates = sorted(sessions, key=_bare_sort_key, reverse=True)
             for s in candidates:
-                if s["id"] not in resumed_ids and (now - s["mtime"]) < 60:
+                if s["id"] not in resumed_ids:
                     s["active"] = True
                     n += 1
                     if n >= bare_count:
