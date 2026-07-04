@@ -43,57 +43,45 @@ HOST = "127.0.0.1"
 
 class SessionManager:
 
-    _active_ids_cache = (set(), 0, set())
-    _active_ids_time = 0
+    _session_pid_cache = {}  # {session_id: pid}
 
     @staticmethod
-    def _get_active_session_ids():
-        """Returns (resumed_ids, bare_count, bare_project_dirs)."""
-        now = time.time()
-        if now - SessionManager._active_ids_time < 1:
-            return SessionManager._active_ids_cache
-
+    def _read_session_pid_files():
+        """Read ~/.claude/sessions/*.json and return (active_ids, session_pid_map).
+        active_ids: set of session IDs whose process is still alive.
+        session_pid_map: {session_id: pid} for alive processes only."""
         ids = set()
-        bare_pids = []
-        try:
-            result = subprocess.run(
-                ["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=3
-            )
-            for line in result.stdout.split("\n"):
-                if "claude" not in line or "Session Manager" in line or "server.py" in line:
+        pid_map = {}
+        sessions_dir = os.path.expanduser("~/.claude/sessions")
+        if os.path.isdir(sessions_dir):
+            for fname in os.listdir(sessions_dir):
+                if not fname.endswith(".json"):
                     continue
-                if any(x in line for x in ("vscode", "claude-code", "shell-snapshot", "git")):
-                    continue
-                parts = line.split(None, 1)
-                if len(parts) < 2:
-                    continue
-                pid, cmd = parts
-                m = re.search(r"claude\s+(?:--resume|-r)\s+([a-f0-9-]{36})", cmd)
-                if m:
-                    ids.add(m.group(1))
-                elif re.search(r"\bclaude\b", cmd):
-                    bare_pids.append(pid)
-        except Exception:
-            pass
+                fpath = os.path.join(sessions_dir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    pid = data.get("pid")
+                    sid = data.get("sessionId")
+                    if pid and sid:
+                        try:
+                            os.kill(pid, 0)  # Check if alive
+                        except OSError:
+                            continue
+                        ids.add(sid)
+                        pid_map[sid] = pid
+                except (json.JSONDecodeError, ValueError, KeyError):
+                    pass
+        return ids, pid_map
 
-        # Get cwds for bare claude processes
-        bare_dirs = set()
-        for pid in bare_pids:
-            try:
-                cwd_r = subprocess.run(
-                    ["lsof", "-a", "-p", pid, "-d", "cwd", "-F", "n"],
-                    capture_output=True, text=True, timeout=2
-                )
-                for cl in cwd_r.stdout.split("\n"):
-                    if cl.startswith("n"):
-                        proj_dir = "-" + cl[1:].lstrip("/").replace("/", "-")
-                        bare_dirs.add(proj_dir)
-            except Exception:
-                pass
-
-        SessionManager._active_ids_cache = (ids, len(bare_pids), bare_dirs)
-        SessionManager._active_ids_time = now
-        return SessionManager._active_ids_cache
+    @staticmethod
+    @staticmethod
+    def _get_active_session_ids():
+        """Returns a set of active session IDs.
+        Reads Claude's PID-to-session mapping files directly — no caching."""
+        ids, pid_map = SessionManager._read_session_pid_files()
+        SessionManager._session_pid_cache = pid_map
+        return ids
 
     @staticmethod
     def list_all():
@@ -102,8 +90,12 @@ class SessionManager:
         if not projects_dir.exists():
             return sessions
 
+        active_ids = SessionManager._get_active_session_ids()
+        seen_ids = set()
+
         for jsonl_file in projects_dir.glob("*/*.jsonl"):
             session_id = jsonl_file.stem
+            seen_ids.add(session_id)
             project_dir = jsonl_file.parent.name if jsonl_file.parent != projects_dir else "(root)"
             project_name = SessionManager._decode_project(project_dir)
 
@@ -117,26 +109,34 @@ class SessionManager:
             info["size"] = SessionManager._format_size(stat.st_size)
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
-            # Active: only by running process
-            resumed_ids, bare_count, bare_dirs = SessionManager._get_active_session_ids()
-            info["active"] = session_id in resumed_ids
+            # Active: 100% accurate via Claude's own PID→session mapping
+            info["active"] = session_id in active_ids
+            # Skip empty sessions: never chatted, no active process, just metadata
+            if not info["active"] and info["messages"] <= 2 and info["title"] == "(empty conversation)":
+                continue
             sessions.append(info)
 
-        # Bare claude: match by PROJECT DIRECTORY. Sort by mtime within project
-        # so brand-new sessions (no messages yet, mtime=now) are picked first.
-        if bare_count > 0:
-            for s in sessions:
-                if s["active"] and s["id"] not in resumed_ids:
-                    s["active"] = False
-            n = 0
-            # Sort by last_time: most recent messages first (stable, not polluted by background writes)
-            sessions.sort(key=lambda s: s.get("last_time") or "", reverse=True)
-            for s in sessions:
-                if s["id"] not in resumed_ids:
-                    s["active"] = True
-                    n += 1
-                    if n >= bare_count:
-                        break
+        # Include active sessions that don't have JSONL files yet (newborn sessions)
+        for sid in active_ids:
+            if sid not in seen_ids:
+                sessions.append({
+                    "id": sid,
+                    "title": "(new session)",
+                    "project": "~",
+                    "project_dir": "(root)",
+                    "filepath": "",
+                    "size_bytes": 0,
+                    "size": "—",
+                    "mtime": time.time(),
+                    "date": "Just started",
+                    "active": True,
+                    "messages": 0,
+                    "turns": 0,
+                    "tokens": 0,
+                    "model": "",
+                    "last_time": "",
+                    "branch": "",
+                })
 
         # Re-sort: active sessions first, then by mtime
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
@@ -220,13 +220,18 @@ class SessionManager:
         }
 
     @staticmethod
-    def get_preview(filepath, max_messages=400, after_line=0):
-        """Return messages from the conversation. If after_line>0, only messages after that line."""
+    def get_preview(filepath, max_messages=400, after_line=0, query=None):
+        """Return messages from the conversation. If after_line>0, only messages after that line.
+        If query is provided, mark matching messages with _match: true."""
         from collections import deque
         messages = deque(maxlen=max_messages)
+        first_match_line = 0
+        q = (query or "").strip().lower()
         with open(filepath, "r", encoding="utf-8") as f:
             for line_no, line in enumerate(f, 1):
                 if after_line > 0 and line_no <= after_line:
+                    if q and not first_match_line and q in line.lower():
+                        first_match_line = line_no
                     continue
                 try:
                     d = json.loads(line)
@@ -290,9 +295,19 @@ class SessionManager:
                     role = "title"
 
                 if role and parts:
-                    messages.append({"role": role, "parts": parts, "_line": line_no})
+                    msg = {"role": role, "parts": parts, "_line": line_no}
+                    if q:
+                        # Only match user/assistant TEXT content, not thinking/tool
+                        for p in parts:
+                            if p.get("type") == "text" and q in p.get("content", "").lower():
+                                msg["_match"] = True
+                                if not first_match_line:
+                                    first_match_line = line_no
+                                break
+                    messages.append(msg)
 
-        return list(messages)
+        # Return as dict so frontend can access first_match_line
+        return {"messages": list(messages), "first_match_line": first_match_line}
 
     # ── Trash Operations ──────────────────────────────────────────
 
@@ -527,6 +542,11 @@ I18N = {
         "newSessionPlaceholder": "新会话",
         "resume": "继续对话",
         "resumed": "已在新终端中打开",
+        "showNonDialogue": "显示过程信息",
+        "hideNonDialogue": "隐藏过程信息",
+        "searchContent": "搜索对话内容",
+        "searchContentFound": "找到 {n} 个匹配会话",
+        "searchContentNone": "未找到匹配的对话内容",
     },
     "en": {
         "appTitle": "Claude Session Manager",
@@ -594,6 +614,11 @@ I18N = {
         "newSessionPlaceholder": "New Session",
         "resume": "Continue",
         "resumed": "Opened in new terminal",
+        "showNonDialogue": "Show process info",
+        "hideNonDialogue": "Hide process info",
+        "searchContent": "Search in messages",
+        "searchContentFound": "{n} sessions found",
+        "searchContentNone": "No matches in messages",
     },
 }
 
@@ -687,14 +712,28 @@ FRONTEND = r"""<!DOCTYPE html>
     width: 390px; min-width: 310px; border-right: 1px solid var(--border);
     display: flex; flex-direction: column; background: var(--surface);
   }
-  .search-bar { padding: 12px; flex-shrink: 0; }
+  .search-bar { display: flex; gap: 6px; padding: 12px; flex-shrink: 0; }
   .search-bar input {
-    width: 100%; padding: 8px 12px; border: 1px solid var(--border);
+    flex: 1; min-width: 0; padding: 8px 12px; border: 1px solid var(--border);
     border-radius: 6px; background: var(--bg); color: var(--text);
     font-size: 13px; font-family: var(--font); outline: none; transition: border-color .15s;
   }
   .search-bar input:focus { border-color: var(--accent); }
   .search-bar input::placeholder { color: var(--text-dim); }
+  .search-bar .content-search-btn {
+    padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); color: var(--text-dim); cursor: pointer;
+    font-size: 13px; white-space: nowrap; transition: border-color .15s, background .15s, color .15s;
+    flex-shrink: 0;
+  }
+  .search-bar .content-search-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .search-bar .content-search-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  .search-result-info {
+    padding: 0 12px 4px; font-size: 11px; color: var(--accent);
+    display: none; flex-shrink: 0;
+  }
+  .search-result-info.show { display: block; }
 
   .tab-bar {
     display: flex; padding: 0 12px 8px; gap: 2px; flex-shrink: 0;
@@ -882,6 +921,22 @@ FRONTEND = r"""<!DOCTYPE html>
   .scroll-to-bottom:hover { background: var(--surface2); border-color: var(--accent); }
   .scroll-to-bottom.show { display: block; }
 
+  .match-nav {
+    display: flex; align-items: center; gap: 4px; padding: 4px 14px;
+    background: var(--surface2); border-bottom: 1px solid var(--border);
+    font-size: 11px; color: var(--text-dim); font-family: var(--font); flex-shrink: 0;
+  }
+  .match-nav button {
+    padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--bg); color: var(--text); cursor: pointer; font-size: 11px; line-height: 1;
+  }
+  .match-nav button:hover { border-color: var(--accent); color: var(--accent); }
+  #match-counter { flex: 1; }
+
+  mark.search-highlight {
+    background: #e01b84; color: #fff; border-radius: 2px; padding: 1px 2px; font-weight: 700;
+  }
+
   .msg { margin-bottom: 12px; padding: 8px 12px; border-radius: 6px; font-size: 12px; line-height: 1.55; word-break: break-word; }
   .msg.user { background: var(--surface); border-left: 2px solid var(--accent); }
   .msg.assistant { background: var(--surface); border-left: 2px solid var(--success); }
@@ -890,6 +945,9 @@ FRONTEND = r"""<!DOCTYPE html>
   .msg.user .role-label { color: var(--accent); }
   .msg.assistant .role-label { color: var(--success); }
   .msg.title .role-label { color: var(--text-dim); }
+
+  .msg.search-match { box-shadow: 0 0 0 2px var(--accent); border-radius: 6px; animation: match-pulse .6s ease-in-out 3; background: var(--surface2); }
+  @keyframes match-pulse { 0%, 100% { box-shadow: 0 0 0 2px var(--accent); } 50% { box-shadow: 0 0 0 4px var(--accent), 0 0 8px var(--accent); } }
 
   /* ── Content part types (terminal-like) ── */
   .part-text { color: var(--text); }
@@ -904,6 +962,13 @@ FRONTEND = r"""<!DOCTYPE html>
   .part-text th { background: var(--surface2); color: var(--text-bright); }
   .part-text hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
   .part-text blockquote { border-left: 2px solid var(--text-dim); padding-left: 8px; color: var(--text-dim); margin: 4px 0; }
+
+  /* Hide non-dialogue parts (thinking, tool use, tool result) */
+  .hide-non-dialogue .part-thinking,
+  .hide-non-dialogue .part-tool,
+  .hide-non-dialogue .part-tool-result { display: none; }
+  /* Also hide entire messages that have no conversation text */
+  .hide-non-dialogue .msg.no-text { display: none; }
 
   .part-thinking { margin: 2px 0; }
   .part-thinking summary { cursor: pointer; color: var(--text-dim); font-size: 10px; font-weight: 500; user-select: none; opacity: 0.7; }
@@ -965,8 +1030,11 @@ FRONTEND = r"""<!DOCTYPE html>
   <div class="panel-left">
     <div class="search-bar">
       <input type="text" id="search" name="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder"
-             oninput="renderList()" autofocus>
+             oninput="onSearchInput()" autofocus>
+      <button type="button" class="content-search-btn" id="content-search-btn"
+              data-i18n-title="searchContent" onclick="contentSearch()" title="搜索对话内容">🔍</button>
     </div>
+    <div class="search-result-info" id="search-result-info"></div>
     <div class="tab-bar">
       <button type="button" class="active" data-tab="list" onclick="switchTab('list')">
         <span data-i18n="listTab">Sessions</span>
@@ -1021,6 +1089,9 @@ function applyLang() {
   document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
     el.placeholder = t(el.getAttribute('data-i18n-placeholder'));
   });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    el.title = t(el.getAttribute('data-i18n-title'));
+  });
   document.getElementById('lang-btn').textContent = t('language');
   document.getElementById('sessions-label').textContent = t('sessions');
   document.getElementById('app-title').textContent = t('appTitle');
@@ -1064,6 +1135,7 @@ let selectedId = null;
 let selectedType = 'session'; // 'session' | 'trash'
 let sortBy = 'time';
 let currentTab = 'list';
+let contentMatchIds = null; // non-null when content search is active → filter by these IDs
 let modalCallback = null;
 let currentDetailType = null;
 
@@ -1093,11 +1165,14 @@ async function init() {
     const newTrash = await api('/api/trash');
     // Preserve placeholder until real session replaces it
     if (window._placeholder) {
+      // Match by "newly active" — the session that became active after +newSession
+      const prevIds = window._prevActiveIds || new Set();
       const realMatch = newSessions.find(s =>
-        s.mtime > window._placeholder.mtime - 10 && !s._placeholder
+        s.active && !prevIds.has(s.id) && !s._placeholder
       );
-      if (realMatch && (realMatch.messages > 0 || realMatch.title !== t('newSessionPlaceholder'))) {
+      if (realMatch) {
         window._placeholder = null;
+        window._prevActiveIds = null;
         if (selectedId === '__placeholder__') selectedId = realMatch.id;
       } else {
         newSessions.unshift(window._placeholder);
@@ -1110,6 +1185,14 @@ async function init() {
       trashItems = newTrash;
       document.getElementById('session-count').textContent = sessions.length;
       updateTrashBadge();
+      // Refresh content search results if active, so new matching sessions appear
+      if (contentMatchIds !== null) {
+        const q = (document.getElementById('search')?.value || '').trim();
+        if (q) {
+          try { contentMatchIds = await api(`/api/sessions/search?q=${encodeURIComponent(q)}`); }
+          catch { /* keep existing results on error */ }
+        }
+      }
       renderList();
     }
     // Also refresh current detail panel if one is open (append-only, no flash)
@@ -1146,15 +1229,18 @@ async function refreshData() {
 
   // Keep placeholder if it exists and no real new session has replaced it yet
   if (window._placeholder) {
+    // Match by "newly active" — the session that became active after +newSession
+    const prevIds = window._prevActiveIds || new Set();
     const realMatch = sessions.find(s =>
-      s.mtime > window._placeholder.mtime - 10 && !s._placeholder
+      s.active && !prevIds.has(s.id) && !s._placeholder
     );
-    if (realMatch && (realMatch.messages > 0 || realMatch.title !== t('newSessionPlaceholder'))) {
-      // Real session found — remove placeholder, select real one
+    if (realMatch) {
+      // Real new session found — remove placeholder, select real one
       window._placeholder = null;
+      window._prevActiveIds = null;
       if (selectedId === '__placeholder__') selectedId = realMatch.id;
     } else {
-      // Keep placeholder
+      // Keep placeholder (session hasn't appeared in list_all yet)
       sessions.unshift(window._placeholder);
     }
   }
@@ -1193,6 +1279,77 @@ function updateTrashBadge() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  Search
+// ═══════════════════════════════════════════════════════════════════
+function onSearchInput() {
+  // Clear content search when user types (back to fast filter mode)
+  if (contentMatchIds !== null) {
+    contentMatchIds = null;
+    const btn = document.getElementById('content-search-btn');
+    if (btn) { btn.classList.remove('active'); btn.textContent = '🔍'; }
+    const info = document.getElementById('search-result-info');
+    if (info) info.classList.remove('show');
+  }
+  renderList();
+}
+
+async function contentSearch() {
+  const input = document.getElementById('search');
+  const query = (input?.value || '').trim();
+  const btn = document.getElementById('content-search-btn');
+  const info = document.getElementById('search-result-info');
+
+  if (contentMatchIds !== null) {
+    // Toggle off: already in content search mode, switch back
+    contentMatchIds = null;
+    if (btn) { btn.classList.remove('active'); btn.textContent = '🔍'; }
+    if (info) info.classList.remove('show');
+    renderList();
+    return;
+  }
+
+  if (!query) return;
+
+  if (btn) {
+    btn.textContent = '⏳';
+    btn.classList.add('active');
+  }
+  if (info) { info.textContent = t('loading'); info.classList.add('show'); }
+
+  const t0 = Date.now();
+  try {
+    contentMatchIds = await api(`/api/sessions/search?q=${encodeURIComponent(query)}`);
+  } catch {
+    contentMatchIds = [];
+  }
+
+  // Ensure loading indicator shows for at least 300ms
+  const elapsed = Date.now() - t0;
+  if (elapsed < 300) await new Promise(r => setTimeout(r, 300 - elapsed));
+
+  // Always keep active state — show result count
+  const count = contentMatchIds ? contentMatchIds.length : 0;
+  if (btn) {
+    btn.classList.add('active');
+    btn.textContent = count > 0 ? `🔍${count}` : '🔍';
+    btn.title = count > 0
+      ? t('searchContentFound').replace('{n}', count)
+      : t('searchContentNone');
+  }
+  if (info) {
+    info.textContent = count > 0
+      ? t('searchContentFound').replace('{n}', count)
+      : t('searchContentNone');
+    info.classList.add('show');
+  }
+  renderList();
+
+  // Flash the session list to signal results
+  const list = document.getElementById('session-list');
+  if (list) { list.style.transition = 'opacity .1s'; list.style.opacity = '0.5'; requestAnimationFrame(() => { list.style.opacity = '1'; }); }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  Render List
 // ═══════════════════════════════════════════════════════════════════
 function renderList() {
@@ -1201,10 +1358,13 @@ function renderList() {
 
   if (currentTab === 'list') {
     let filtered = sessions.filter(s => {
+      if (contentMatchIds !== null) return contentMatchIds.includes(s.id);
       if (!query) return true;
       return (s.title || '').toLowerCase().includes(query)
         || (s.project || '').toLowerCase().includes(query)
-        || (s.model || '').toLowerCase().includes(query);
+        || (s.model || '').toLowerCase().includes(query)
+        || (s.id || '').toLowerCase().includes(query)
+        || (s.date || '').toLowerCase().includes(query);
     });
 
     const actives = filtered.filter(s => s.active);
@@ -1283,34 +1443,53 @@ function esc(str) {
   return div.innerHTML;
 }
 
-function renderParts(parts) {
+// Check if a message has any text-type part (actual conversation)
+function hasTextPart(parts) {
+  return parts && parts.some(p => p.type === 'text');
+}
+
+// Highlight search query in escaped HTML text.
+// Uses split-then-esc approach to avoid entity issues.
+function highlightText(text, query) {
+  if (!query || !text) return esc(text);
+  const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`(${escapedQuery})`, 'gi');
+  const parts = String(text).split(regex);
+  return parts.map((part, i) => {
+    if (i % 2 === 1) return `<mark class="search-highlight">${esc(part)}</mark>`;
+    return esc(part);
+  }).join('');
+}
+
+function renderParts(parts, query) {
   if (!parts || parts.length === 0) return '';
   return parts.map(p => {
     switch (p.type) {
       case 'text':
-        return `<div class="part-text">${renderMarkdown(p.content)}</div>`;
+        return `<div class="part-text">${renderMarkdown(p.content, query)}</div>`;
       case 'thinking':
         const thinkId = 'think-' + (++window._thinkCounter || (window._thinkCounter = 1));
         return `<details class="part-thinking">
           <summary>💭 Thinking</summary>
-          <div class="thinking-content">${esc(p.content)}</div>
+          <div class="thinking-content">${highlightText(p.content, query)}</div>
         </details>`;
       case 'tool_use':
         return `<div class="part-tool">
           <div class="tool-name">⚙ ${esc(p.name)}</div>
-          ${p.input ? `<div class="tool-input">${esc(p.input)}</div>` : ''}
+          ${p.input ? `<div class="tool-input">${highlightText(p.input, query)}</div>` : ''}
         </div>`;
       case 'tool_result':
-        return `<div class="part-tool-result${p.is_error ? ' error' : ''}">${esc(p.content)}</div>`;
+        return `<div class="part-tool-result${p.is_error ? ' error' : ''}">${highlightText(String(p.content), query)}</div>`;
       case 'title':
-        return `<em>${esc(p.content)}</em>`;
+        return `<em>${highlightText(p.content, query)}</em>`;
       default:
         return esc(String(p.content || ''));
     }
   }).join('');
 }
 
-function renderMarkdown(str) {
+function renderMarkdown(str, query) {
+  // Always escape first, then process markdown on clean text
   const escaped = esc(str);
 
   // Protect code blocks and inline code from further processing
@@ -1346,6 +1525,12 @@ function renderMarkdown(str) {
     html = html.replace(`%%CODEBLOCK_${i}%%`, block);
   });
 
+  // Apply search highlight AFTER markdown to avoid tag corruption
+  if (query) {
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    html = html.replace(new RegExp(escapedQuery, 'gi'), '<mark class="search-highlight">$&</mark>');
+  }
+
   return html;
 }
 
@@ -1354,6 +1539,35 @@ function setSort(key, btn) {
   document.querySelectorAll('#sort-bar button').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   renderList();
+}
+
+function toggleNonDialogue() {
+  const detail = document.querySelector('.detail');
+  const btn = document.getElementById('toggle-non-dialogue-btn');
+  if (!detail || !btn) return;
+  const hidden = detail.classList.toggle('hide-non-dialogue');
+  btn.textContent = hidden ? t('showNonDialogue') : t('hideNonDialogue');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Search Match Navigation
+// ═══════════════════════════════════════════════════════════════════
+function updateMatchCounter() {
+  const counter = document.getElementById('match-counter');
+  const total = window._matchEls ? window._matchEls.length : 0;
+  if (counter) {
+    counter.textContent = total > 0 ? `${window._matchIdx + 1} / ${total}` : '0 / 0';
+  }
+}
+
+function navigateMatch(dir) {
+  // dir: 1 = next, -1 = prev
+  if (!window._matchEls || window._matchEls.length === 0) return;
+  window._matchIdx += dir;
+  if (window._matchIdx >= window._matchEls.length) window._matchIdx = 0;
+  if (window._matchIdx < 0) window._matchIdx = window._matchEls.length - 1;
+  window._matchEls[window._matchIdx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  updateMatchCounter();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1368,9 +1582,11 @@ async function selectSession(id) {
   const s = sessions.find(s => s.id === id);
   if (!s) return;
 
+  const searchQuery = (contentMatchIds !== null) ? (document.getElementById('search')?.value || '').trim() : '';
+
   const panel = document.getElementById('panel-right');
   panel.innerHTML = `
-    <div class="detail">
+    <div class="detail hide-non-dialogue">
       <div class="detail-header">
         <div class="detail-top-row">
           <details class="info-details">
@@ -1387,35 +1603,52 @@ async function selectSession(id) {
           </div>
           </details>
           <div class="detail-actions">
+            <button type="button" class="btn" id="toggle-non-dialogue-btn" onclick="toggleNonDialogue()" style="color:var(--text-dim);border-color:var(--border)">${t('showNonDialogue')}</button>
             ${s.active ? `<button type="button" class="btn" onclick="askRestartSession('${s.id}')" style="color:var(--warn);border-color:var(--warn)">&#8635; ${t('restart')}</button>` : ''}
             ${s.active ? '' : `<button type="button" class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
             <button type="button" class="btn btn-danger" id="detail-delete-btn" onclick="${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
           </div>
         </div>
       </div>
+      ${searchQuery ? `<div class="match-nav" id="match-nav"><span id="match-counter"></span><button type="button" onclick="navigateMatch(-1)" title="上一个">▲</button><button type="button" onclick="navigateMatch(1)" title="下一个">▼</button></div>` : ''}
       <div class="conversation-preview" id="conversation-preview" onscroll="updateScrollButton()">${t('loading')}</div>
       <button type="button" class="scroll-to-bottom" id="scroll-to-bottom-btn" onclick="scrollToLatest()">↓ ${t('scrollToBottom')}</button>
     </div>
   `;
 
   try {
-    const msgs = await api(`/api/sessions/${id}/preview`);
+    const qs = searchQuery ? `?q=${encodeURIComponent(searchQuery)}` : '';
+    const data = await api(`/api/sessions/${id}/preview${qs}`);
+    // Handle new dict format: {messages: [...], first_match_line: N}
+    const msgs = Array.isArray(data) ? data : (data.messages || []);
+    const firstMatchLine = Array.isArray(data) ? 0 : (data.first_match_line || 0);
+
     const preview = document.getElementById('conversation-preview');
     if (!msgs || msgs.length === 0) {
       preview.innerHTML = `<p style="color:var(--text-dim);padding:20px;text-align:center">${t('noMessages')}</p>`;
       return;
     }
     preview.innerHTML = msgs.map(m => `
-      <div class="msg ${m.role}">
+      <div class="msg ${m.role}${m._match ? ' search-match' : ''}${!hasTextPart(m.parts) ? ' no-text' : ''}" data-line="${m._line || ''}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
-        ${renderParts(m.parts || [])}
+        ${renderParts(m.parts || [], searchQuery)}
       </div>
     `).join('');
     // Track last line number for incremental refresh
     const lastMsg = msgs[msgs.length - 1];
     window._lastLine = lastMsg ? (lastMsg._line || 0) : 0;
-    // Auto-scroll to bottom on initial load
-    preview.scrollTop = preview.scrollHeight;
+
+    // Navigation state for match jumping
+    window._matchEls = preview.querySelectorAll('.msg.search-match');
+    window._matchIdx = -1;
+
+    // Update counter & navigate to first match if in content search mode
+    if (searchQuery) {
+      updateMatchCounter();
+      navigateMatch(1); // jump to first match
+    } else {
+      preview.scrollTop = preview.scrollHeight;
+    }
   } catch (e) {
     document.getElementById('conversation-preview').innerHTML = `<p style="color:var(--danger);padding:20px">${t('loadFailed')}</p>`;
   }
@@ -1426,20 +1659,28 @@ async function refreshPreview(id) {
   if (!container) return;
   try {
     const afterLine = window._lastLine || 0;
-    const msgs = await api(`/api/sessions/${id}/preview?after=${afterLine}`);
+    const searchQuery = (contentMatchIds !== null) ? (document.getElementById('search')?.value || '').trim() : '';
+    const queryPart = searchQuery ? `&q=${encodeURIComponent(searchQuery)}` : '';
+    const data = await api(`/api/sessions/${id}/preview?after=${afterLine}${queryPart}`);
+    const msgs = Array.isArray(data) ? data : (data.messages || []);
     if (!msgs || msgs.length === 0) return;
     // Update last line tracker
     window._lastLine = msgs[msgs.length - 1]._line || afterLine;
     // Append only — never rebuild, never disrupt scroll
     const btn = document.getElementById('scroll-to-bottom-btn'); const atBottom = !btn || !btn.classList.contains('show');
     container.insertAdjacentHTML('beforeend', msgs.map(m => `
-      <div class="msg ${m.role}">
+      <div class="msg ${m.role}${m._match ? ' search-match' : ''}${!hasTextPart(m.parts) ? ' no-text' : ''}" data-line="${m._line || ''}">
         <div class="role-label">${m.role === 'title' ? 'TITLE' : m.role.toUpperCase()}</div>
-        ${renderParts(m.parts || [])}
+        ${renderParts(m.parts || [], searchQuery)}
       </div>
     `).join(''));
     if (atBottom) container.scrollTop = container.scrollHeight;
     updateScrollButton();
+    // Refresh match navigation state for any newly appended matches
+    if (searchQuery) {
+      window._matchEls = container.querySelectorAll('.msg.search-match');
+      updateMatchCounter();
+    }
   } catch (e) { console.error('refreshPreview failed:', e); }
 }
 
@@ -1522,6 +1763,8 @@ function updateEmptyState() {
 // ═══════════════════════════════════════════════════════════════════
 async function newSession() {
   try {
+    // Remember which sessions are already active, so we can identify the new one
+    window._prevActiveIds = new Set(sessions.filter(s => s.active).map(s => s.id));
     const res = await api('/api/new-session', 'POST');
     if (res.success) {
       toast(t('newChatStarted'), 'success');
@@ -1789,8 +2032,14 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(qs)
             try: after_line = int(params.get("after", [0])[0])
             except (ValueError, IndexError): after_line = 0
+            query = params.get("q", [None])[0]
             filepath = self._find_session_path(session_id)
-            return self._json(SessionManager.get_preview(filepath, after_line=after_line)) if filepath else self._error(404, "Not found")
+            return self._json(SessionManager.get_preview(filepath, after_line=after_line, query=query)) if filepath else self._error(404, "Not found")
+        elif path == "/api/sessions/search":
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            query = params.get("q", [""])[0]
+            return self._search_content(query)
         elif path == "/api/trash":
             return self._json(SessionManager.list_trash())
         else:
@@ -1865,6 +2114,32 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"error": msg}).encode("utf-8"))
 
+    def _search_content(self, query):
+        """Search JSONL session files for query text using grep. Returns matching session IDs."""
+        if not query or not query.strip():
+            return self._json([])
+        # subprocess.run with list form handles argument escaping automatically
+        pattern = query.strip()
+        try:
+            result = subprocess.run(
+                ["grep", "-rIlF", "--", pattern, CLAUDE_PROJECTS_DIR],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode not in (0, 1):  # 0=found, 1=not found
+                return self._json([])
+            # Extract session IDs from file paths
+            ids = []
+            for line in result.stdout.strip().split("\n"):
+                if line:
+                    name = Path(line).stem  # filename without .jsonl
+                    if len(name) == 36:  # UUID length
+                        ids.append(name)
+            return self._json(list(set(ids)))  # deduplicate
+        except subprocess.TimeoutExpired:
+            return self._json([])
+        except Exception:
+            return self._json([])
+
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, DELETE, POST, OPTIONS")
@@ -1888,9 +2163,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def _restart_session(self, session_id):
         """Stop the session then immediately restart it."""
-        self._stop_session(session_id)
-        import time as _time
-        _time.sleep(1)
+        # Use kill directly (no HTTP response), then resume
+        SessionManager._get_active_session_ids()  # refresh cache
+        pid = SessionManager._session_pid_cache.get(session_id)
+        if pid:
+            try:
+                subprocess.run(["kill", str(pid)], capture_output=True, timeout=3)
+            except Exception:
+                pass
+        time.sleep(1)
         return self._resume_session(session_id)
 
     def _resume_session(self, session_id):
@@ -1921,65 +2202,18 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
 
     def _stop_session(self, session_id):
-        """Kill the claude process tied to this session (SIGTERM only)."""
+        """Kill the claude process tied to this session, using Claude's own PID mapping."""
+        # Use the PID mapping from the last _get_active_session_ids call
+        # (refreshes at most once per second)
+        SessionManager._get_active_session_ids()  # ensure cache is fresh
+        pid = SessionManager._session_pid_cache.get(session_id)
+        if not pid:
+            return self._json({"success": False, "message": "No matching process found"})
         try:
-            result = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=3)
-            target_pids = []
-
-            for line in result.stdout.split("\n"):
-                if "claude" not in line or "Session Manager" in line:
-                    continue
-                if "vscode" in line or "claude-code" in line:
-                    continue
-
-                parts = line.split(None, 1)
-                if len(parts) < 2:
-                    continue
-                pid, cmd = parts
-
-                # Exact match: --resume <id> or -r <id>
-                m = re.search(r"(?:--resume|-r)\s+([a-f0-9-]{36})", cmd)
-                if m and m.group(1) == session_id:
-                    target_pids.append(pid)
-
-            if not target_pids:
-                # Check if this is a bare claude session — kill by project dir match
-                sessions = SessionManager.list_all()
-                session_data = next((s for s in sessions if s["id"] == session_id), None)
-                if session_data and session_data.get("active"):
-                    proj = session_data.get("project_dir", "")
-                    if proj:
-                        for line in result.stdout.split("\n"):
-                            if "claude" not in line or "Session Manager" in line:
-                                continue
-                            if "vscode" in line or "claude-code" in line or "git" in line:
-                                continue
-                            parts = line.split(None, 1)
-                            if len(parts) < 2:
-                                continue
-                            pid, cmd = parts
-                            # Kill bare claude processes in the same project
-                            if not re.search(r"(?:--resume|-r)\s+[a-f0-9-]{36}", cmd) \
-                               and re.search(r"\bclaude\b", cmd):
-                                try:
-                                    cwd_r = subprocess.run(
-                                        ["lsof", "-a", "-p", pid, "-d", "cwd", "-F", "n"],
-                                        capture_output=True, text=True, timeout=2
-                                    )
-                                    for cl in cwd_r.stdout.split("\n"):
-                                        if cl.startswith("n"):
-                                            pdir = "-" + cl[1:].lstrip("/").replace("/", "-")
-                                            if pdir == proj and pid not in target_pids:
-                                                target_pids.append(pid)
-                                                break  # one bare process per session
-                                except Exception:
-                                    pass
-                if not target_pids:
-                    return self._json({"success": False, "message": "No matching process found"})
-
-            # SIGTERM for graceful shutdown
-            for pid in target_pids:
-                subprocess.run(["kill", pid], capture_output=True)
+            subprocess.run(["kill", str(pid)], capture_output=True, timeout=3)
+            return self._json({"success": True, "message": "Process terminated"})
+        except Exception as e:
+            return self._json({"success": False, "message": str(e)})
 
             return self._json({"success": True, "message": "Stopped"})
         except Exception as e:
