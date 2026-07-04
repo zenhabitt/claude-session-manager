@@ -477,7 +477,7 @@ class SessionManager:
 
 I18N = {
     "zh": {
-        "appTitle": "Claude 会话管理器",
+        "appTitle": "S.T.O.A.",
         "sessions": "个会话",
         "searchPlaceholder": "搜索会话…",
         "sortTime": "时间",
@@ -544,12 +544,12 @@ I18N = {
         "resumed": "已在新终端中打开",
         "showNonDialogue": "显示过程信息",
         "hideNonDialogue": "隐藏过程信息",
-        "searchContent": "搜索对话内容",
+        "searchContent": "搜索会话内容",
         "searchContentFound": "找到 {n} 个匹配会话",
         "searchContentNone": "未找到匹配的对话内容",
     },
     "en": {
-        "appTitle": "Claude Session Manager",
+        "appTitle": "S.T.O.A.",
         "sessions": "sessions",
         "searchPlaceholder": "Search sessions…",
         "sortTime": "Time",
@@ -632,7 +632,8 @@ FRONTEND = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Session Manager</title>
+<title>S.T.O.A.</title>
+<link rel="icon" type="image/png" href="data:image/png;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QCwRXhpZgAATU0AKgAAAAgABQESAAMAAAABAAEAAAEaAAUAAAABAAAASgEbAAUAAAABAAAAUgEoAAMAAAABAAIAAIdpAAQAAAABAAAAWgAAAAAAAABIAAAAAQAAAEgAAAABAAaQAAAHAAAABDAyMjGRAQAHAAAABAECAwCgAAAHAAAABDAxMDCgAgAEAAAAAQAAAECgAwAEAAAAAQAAAECkBgADAAAAAQAAAAAAAAAA/+ICKElDQ19QUk9GSUxFAAEBAAACGGFwcGwEAAAAbW50clJHQiBYWVogB+YAAQABAAAAAAAAYWNzcEFQUEwAAAAAQVBQTAAAAAAAAAAAAAAAAAAAAAAAAPbWAAEAAAAA0y1hcHBsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAKZGVzYwAAAPwAAAAwY3BydAAAASwAAABQd3RwdAAAAXwAAAAUclhZWgAAAZAAAAAUZ1hZWgAAAaQAAAAUYlhZWgAAAbgAAAAUclRSQwAAAcwAAAAgY2hhZAAAAewAAAAsYlRSQwAAAcwAAAAgZ1RSQwAAAcwAAAAgbWx1YwAAAAAAAAABAAAADGVuVVMAAAAUAAAAHABEAGkAcwBwAGwAYQB5ACAAUAAzbWx1YwAAAAAAAAABAAAADGVuVVMAAAA0AAAAHABDAG8AcAB5AHIAaQBnAGgAdAAgAEEAcABwAGwAZQAgAEkAbgBjAC4ALAAgADIAMAAyADJYWVogAAAAAAAA9tUAAQAAAADTLFhZWiAAAAAAAACD3wAAPb////+7WFlaIAAAAAAAAEq/AACxNwAACrlYWVogAAAAAAAAKDgAABELAADIuXBhcmEAAAAAAAMAAAACZmYAAPKnAAANWQAAE9AAAApbc2YzMgAAAAAAAQxCAAAF3v//8yYAAAeTAAD9kP//+6L///2jAAAD3AAAwG7/wAARCABAAEADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9sAQwACAgICAgIDAgIDBQMDAwUGBQUFBQYIBgYGBgYICggICAgICAoKCgoKCgoKDAwMDAwMDg4ODg4PDw8PDw8PDw8P/9sAQwECAgIEBAQHBAQHEAsJCxAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ/90ABAAE/9oADAMBAAIRAxEAPwD6siuBLneQTjpXWaLaG8uYoufm7DpivHLPWBLOql8A4GK+gvhpbpfakHJLBF5+tAFLxd4cJKzpHhQMflXzP408M+ZbyOiZ5OeK/RnUtB+1WpUKOnHFeCa14FnuLj7Mg+VyeTwqj1JPQepNAH5B+OvDF5JefZ7aJpZJmwiKCzMTxgKOTmvqb9nD/gn3P4hurfxv8b0a2sFIkh0lDtmmHUG4I+4p/uj5j3xX2v4J8C+D9H1hbvSYE1LUE+9fOuVQ91gB6e79T2r6v0q3dbdRJkk9QOpzQB4r8TLfTPD3hCLwpoa3FhaJD5Fvp+iRA38seNoigx8sCkcGU4wOcqea/mY+M17De/EbWYLXQ4fDsFjM1uljDJ55i8s4PmzZbzZSeXfJy2a/fz9tv4naf8OPhlqVm3iv/hGtR1WB47Wz01UfUrxyMDdI3+qiH8bAZxwG7V/Ny7vIzvJlnbkknJJPUk0Af//Qu6fr+54wG+bqT6n2r7c/Z+1OC/vGhZwzsvAzz71+VWl+JHNyoLgBsc9OPWvs/wDZ7+IfhH/hI7WyTUpbLUFfCSTootpMH7uQcrnsTQB+qsdkCnIr5S+M2u3EviuDwHpLFEWNJrwr1cyZKpx2AGT65r6t1XxBonh7QJvEWt3cdtY28fmSSFhjAHRf7xPQAdTXwd4b1O68ZeOL/wAY3kew6pOXjQ9UiHEa/goGaAPpH4feGUtbaPcnGB2r2KSJoLZ9kbOVU4UEJ+vb61m+HYAtrGgxgCvH/wBp19Ot/hZqZvIbsyTJ5cMlpK0WyQ9DIVYZX2IIPSgD8Qv25PitqHxL+JVxokmn2NjYeG5JLeE2jLO0zE/PJJOAC54wB0Hb1r4KmtiC2RjA7+lfS/jXw7tuJjGnBJ4bk9a8eutIZWOV2kdR6496AP/R+HbbWyHCsSee/NepeG9czcQvB8kgIHBx07181x3Z4I+vHau/8Naq1vcRu/IBAwM9KAP0V8CWev8Aja5tV1rULi8t4GBjikkZkUj0XO3P4V9++EfAU1t5EsEeNo6D09K+DfgP4r04NAHkXzFxkEjI/wD11+n3g3xLp0lrGyuM4oA9K0q2MFuquNpAxXyD+1F4gtNStIdAtZfNWIM0mxzt3Hjay9Mj+tfT2uw6/f2rjwxqEduXAO2RckH1Vh0z6Yr488ffCbx/IbjULi3+17suzRkMT6k9/wBKAPzC8beHmkkcxL1zn1rxG/8ADLE4VcEjn2Ffb/iPQEE7xzIdwzkH1ryq98LZYjyye2RQB//S/MKCTkc4rtdGl2MGU89s150kuNp7muw0mfawI5PvQB9ReCLm+aaH7FIVlJABXg5/Cv1L+FkWqQ6LaR3l0zyyAfeOSM9jX5MeAdZWxuIpjhjH69vwr7y8DfFK4BhPURAKAaAP0j8NalLbxiC4YttIG4/pWv4r8Uadomjz3V3IVypVQjYfcRx/+vFfGn/Cw9Z1DLQz+SGXaQo9Dn8waxdU1vU9ZLTajO07EY5Pp2oA888QWovrua5K58xywz15Oa4WTShIx2qAT0Fesz2ynnP1rLksOQ3pyO1AH//Z">
 <style>
   :root, [data-theme="warm"] {
     --bg: #1a1918; --surface: #242321; --surface2: #2d2b28; --border: #383532;
@@ -1015,7 +1016,7 @@ FRONTEND = r"""<!DOCTYPE html>
 <body>
 
 <header>
-  <h1>▸ <span id="app-title">Claude Session Manager</span></h1>
+  <h1>▸ <span id="app-title">S.T.O.A.</span></h1>
   <div class="header-right">
     <button type="button" class="lang-btn" onclick="newSession()" title="New chat" style="border-color:var(--accent);color:var(--accent)">+ <span data-i18n="newChat">New Chat</span></button>
     <button type="button" class="lang-btn" id="refresh-btn" onclick="refreshData()" title="Refresh">&#8635; <span data-i18n="refresh">Refresh</span></button>
@@ -1032,7 +1033,7 @@ FRONTEND = r"""<!DOCTYPE html>
       <input type="text" id="search" name="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder"
              oninput="onSearchInput()" autofocus>
       <button type="button" class="content-search-btn" id="content-search-btn"
-              data-i18n-title="searchContent" onclick="contentSearch()" title="搜索对话内容">🔍</button>
+              data-i18n="searchContent" onclick="contentSearch()">搜索会话内容</button>
     </div>
     <div class="search-result-info" id="search-result-info"></div>
     <div class="tab-bar">
@@ -1286,7 +1287,7 @@ function onSearchInput() {
   if (contentMatchIds !== null) {
     contentMatchIds = null;
     const btn = document.getElementById('content-search-btn');
-    if (btn) { btn.classList.remove('active'); btn.textContent = '🔍'; }
+    if (btn) { btn.classList.remove('active'); btn.textContent = t('searchContent'); }
     const info = document.getElementById('search-result-info');
     if (info) info.classList.remove('show');
   }
@@ -1302,7 +1303,7 @@ async function contentSearch() {
   if (contentMatchIds !== null) {
     // Toggle off: already in content search mode, switch back
     contentMatchIds = null;
-    if (btn) { btn.classList.remove('active'); btn.textContent = '🔍'; }
+    if (btn) { btn.classList.remove('active'); btn.textContent = t('searchContent'); }
     if (info) info.classList.remove('show');
     renderList();
     return;
@@ -1331,7 +1332,7 @@ async function contentSearch() {
   const count = contentMatchIds ? contentMatchIds.length : 0;
   if (btn) {
     btn.classList.add('active');
-    btn.textContent = count > 0 ? `🔍${count}` : '🔍';
+    btn.textContent = count > 0 ? `${t('searchContent')} (${count})` : t('searchContent');
     btn.title = count > 0
       ? t('searchContentFound').replace('{n}', count)
       : t('searchContentNone');

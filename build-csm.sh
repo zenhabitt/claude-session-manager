@@ -5,7 +5,7 @@
 
 set -e
 
-APP_NAME="Claude Session Manager"
+APP_NAME="S.T.O.A."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
@@ -31,133 +31,104 @@ echo "         Done"
 # ── Step 2: Generate App Icon ───────────────────────────────────────
 echo "  [2/5] Generating app icon..."
 
-ICONSET="$BUILD_DIR/icon.iconset"
-rm -rf "$ICONSET"
-mkdir -p "$ICONSET"
+CUSTOM_ICNS="$SCRIPT_DIR/icon-custom.icns"
 
-# Generate a 1024x1024 source PNG using pure Python (PPM → sips conversion)
-python3 << 'PYEOF'
+if [ -f "$CUSTOM_ICNS" ]; then
+    # Use pre-built custom icon
+    cp "$CUSTOM_ICNS" "$RESOURCES/icon.icns"
+    echo "         Using custom icon"
+else
+    # Fallback: generate icon from scratch
+    ICONSET="$BUILD_DIR/icon.iconset"
+    rm -rf "$ICONSET"
+    mkdir -p "$ICONSET"
+
+    python3 << 'PYEOF'
 import subprocess, os
 
-# Create a 1024x1024 PPM image (simple text format)
-# Design: dark background with a stylized "C" chat bubble in gradient blue/purple
 size = 1024
 ppm_path = "/tmp/csm_icon.ppm"
 
-# Generate pixel data
 with open(ppm_path, "w") as f:
     f.write(f"P3\n{size} {size}\n255\n")
     for y in range(size):
         for x in range(size):
-            # Center-relative coordinates (range -1 to 1)
             cx = (x - size/2) / (size/2)
             cy = (y - size/2) / (size/2)
-            dist = (cx*cx + cy*cy) ** 0.5
-
-            # Rounded rectangle background
             rx = abs(cx) * 1.15
             ry = abs(cy) * 1.15
-            # Rounded corners (squircle effect)
             rect_dist = (rx**4 + ry**4) ** 0.25
 
             if rect_dist < 0.92:
-                # Gradient from deep blue (top) to purple (bottom)
-                t = (y / size)  # 0 at top, 1 at bottom
+                t = (y / size)
                 r = int(45 + t * 35)
                 g = int(60 + t * 15)
                 b_val = int(140 - t * 40)
-                # Slight inner glow
                 glow = 1.0 - (rect_dist / 0.92) * 0.15
-                r = int(r * glow)
-                g = int(g * glow)
-                b_val = int(b_val * glow)
+                r, g, b_val = int(r*glow), int(g*glow), int(b_val*glow)
             elif rect_dist < 1.0:
-                # Anti-aliased edge
                 edge_t = (rect_dist - 0.92) / 0.08
-                bg_r, bg_g, bg_b = 26, 27, 30  # dark background
+                bg_r, bg_g, bg_b = 26, 27, 30
                 t = (y / size)
                 fg_r = int(45 + t * 35)
                 fg_g = int(60 + t * 15)
                 fg_b = int(140 - t * 40)
-                r = int(fg_r * (1-edge_t) + bg_r * edge_t)
-                g = int(fg_g * (1-edge_t) + bg_b * edge_t)
-                b_val = int(fg_b * (1-edge_t) + bg_b * edge_t)
+                r = int(fg_r*(1-edge_t) + bg_r*edge_t)
+                g = int(fg_g*(1-edge_t) + bg_b*edge_t)
+                b_val = int(fg_b*(1-edge_t) + bg_b*edge_t)
             else:
-                r, g, b_val = 26, 27, 30  # background
+                r, g, b_val = 26, 27, 30
 
-            # Draw chat bubble and "C" in white
-            # Chat bubble: centered circle-ish shape
             bubble_cx, bubble_cy = 0.0, -0.08
-            bubble_rx2 = 0.35
-            bubble_ry2 = 0.32
-            bubble_dist = ((cx - bubble_cx)**2 / bubble_rx2**2 +
-                           (cy - bubble_cy)**2 / bubble_ry2**2) ** 0.5
+            bubble_rx2, bubble_ry2 = 0.35, 0.32
+            bubble_dist = ((cx-bubble_cx)**2/bubble_rx2**2 + (cy-bubble_cy)**2/bubble_ry2**2) ** 0.5
 
-            # Small tail on bubble
             tail = False
             if 0.13 < cx < 0.22 and 0.18 < cy < 0.32:
-                tail_dist = abs(cx - 0.175) / 0.05 + abs(cy - 0.25) / 0.08
-                if tail_dist < 0.7:
+                if abs(cx-0.175)/0.05 + abs(cy-0.25)/0.08 < 0.7:
                     tail = True
 
             if bubble_dist < 1.0 or tail:
-                # Letter "C" inside bubble (subtractive)
-                # C shape: outer circle minus inner circle, with a cut on the right
                 letter_cx, letter_cy = 0.0, -0.06
-                c_outer = 0.18
-                c_inner = 0.11
-                c_dist = ((cx - letter_cx)**2 + (cy - letter_cy)**2) ** 0.5
+                c_outer, c_inner = 0.18, 0.11
+                c_dist = ((cx-letter_cx)**2 + (cy-letter_cy)**2) ** 0.5
                 is_c = c_inner < c_dist < c_outer and cx < 0.07
-                # Anti-aliased C edges
                 if is_c:
-                    # White text
                     blend = 1.0
-                    if c_dist < c_inner + 0.015:
-                        blend = (c_dist - c_inner) / 0.015
-                    elif c_dist > c_outer - 0.015:
-                        blend = (c_outer - c_dist) / 0.015
+                    if c_dist < c_inner+0.015: blend = (c_dist-c_inner)/0.015
+                    elif c_dist > c_outer-0.015: blend = (c_outer-c_dist)/0.015
                     blend = max(0, min(1, blend))
-                    r = int(r + (240 - r) * blend)
-                    g = int(g + (240 - g) * blend)
-                    b_val = int(b_val + (245 - b_val) * blend)
+                    r = int(r + (240-r)*blend)
+                    g = int(g + (240-g)*blend)
+                    b_val = int(b_val + (245-b_val)*blend)
                 elif not tail and bubble_dist > 0.92:
-                    # Thin border around bubble
-                    r = int(r + (180 - r) * 0.3)
-                    g = int(g + (200 - g) * 0.3)
-                    b_val = int(b_val + (230 - b_val) * 0.3)
+                    r = int(r + (180-r)*0.3)
+                    g = int(g + (200-g)*0.3)
+                    b_val = int(b_val + (230-b_val)*0.3)
 
-            # Clamp
-            r = max(0, min(255, r))
-            g = max(0, min(255, g))
-            b_val = max(0, min(255, b_val))
-
+            r, g, b_val = max(0,min(255,r)), max(0,min(255,g)), max(0,min(255,b_val))
             f.write(f"{r} {g} {b_val} ")
 
-# Convert PPM to PNG using sips
-subprocess.run(["sips", "-s", "format", "png", ppm_path,
-                "--out", "/tmp/csm_icon_1024.png"], check=True, capture_output=True)
-
+subprocess.run(["sips", "-s", "format", "png", ppm_path, "--out", "/tmp/csm_icon_1024.png"], check=True, capture_output=True)
 os.remove(ppm_path)
 print("         Icon PNG generated")
 PYEOF
 
-# Generate various sizes for .iconset
-sips -z 16 16   /tmp/csm_icon_1024.png --out "$ICONSET/icon_16x16.png" 2>/dev/null
-sips -z 32 32   /tmp/csm_icon_1024.png --out "$ICONSET/icon_16x16@2x.png" 2>/dev/null
-sips -z 32 32   /tmp/csm_icon_1024.png --out "$ICONSET/icon_32x32.png" 2>/dev/null
-sips -z 64 64   /tmp/csm_icon_1024.png --out "$ICONSET/icon_32x32@2x.png" 2>/dev/null
-sips -z 128 128 /tmp/csm_icon_1024.png --out "$ICONSET/icon_128x128.png" 2>/dev/null
-sips -z 256 256 /tmp/csm_icon_1024.png --out "$ICONSET/icon_128x128@2x.png" 2>/dev/null
-sips -z 256 256 /tmp/csm_icon_1024.png --out "$ICONSET/icon_256x256.png" 2>/dev/null
-sips -z 512 512 /tmp/csm_icon_1024.png --out "$ICONSET/icon_256x256@2x.png" 2>/dev/null
-sips -z 512 512 /tmp/csm_icon_1024.png --out "$ICONSET/icon_512x512.png" 2>/dev/null
-cp /tmp/csm_icon_1024.png "$ICONSET/icon_512x512@2x.png"
+    sips -z 16 16   /tmp/csm_icon_1024.png --out "$ICONSET/icon_16x16.png" 2>/dev/null
+    sips -z 32 32   /tmp/csm_icon_1024.png --out "$ICONSET/icon_16x16@2x.png" 2>/dev/null
+    sips -z 32 32   /tmp/csm_icon_1024.png --out "$ICONSET/icon_32x32.png" 2>/dev/null
+    sips -z 64 64   /tmp/csm_icon_1024.png --out "$ICONSET/icon_32x32@2x.png" 2>/dev/null
+    sips -z 128 128 /tmp/csm_icon_1024.png --out "$ICONSET/icon_128x128.png" 2>/dev/null
+    sips -z 256 256 /tmp/csm_icon_1024.png --out "$ICONSET/icon_128x128@2x.png" 2>/dev/null
+    sips -z 256 256 /tmp/csm_icon_1024.png --out "$ICONSET/icon_256x256.png" 2>/dev/null
+    sips -z 512 512 /tmp/csm_icon_1024.png --out "$ICONSET/icon_256x256@2x.png" 2>/dev/null
+    sips -z 512 512 /tmp/csm_icon_1024.png --out "$ICONSET/icon_512x512.png" 2>/dev/null
+    cp /tmp/csm_icon_1024.png "$ICONSET/icon_512x512@2x.png"
 
-# Create .icns from .iconset
-iconutil -c icns "$ICONSET" -o "$RESOURCES/icon.icns"
-rm -rf "$ICONSET" /tmp/csm_icon_1024.png
-
-echo "         Done"
+    iconutil -c icns "$ICONSET" -o "$RESOURCES/icon.icns"
+    rm -rf "$ICONSET" /tmp/csm_icon_1024.png
+    echo "         Done"
+fi
 
 # ── Step 3: Write launcher (C stub + shell script) ────────────────
 echo "  [3/5] Writing launcher..."
