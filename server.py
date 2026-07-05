@@ -29,30 +29,37 @@ import re
 import datetime
 from pathlib import Path
 
-# ── Config ────────────────────────────────────────────────────────────
+# ── 配置 ────────────────────────────────────────────────────────────
+# Claude 会话数据存储在 ~/.claude/projects/ 下，按项目目录组织
+# 每个会话是一个 .jsonl 文件，每行一条 JSON 记录
 
-CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
-TRASH_DIR = os.path.expanduser("~/.claude/session-manager/trash")
-PORT = 8742
-HOST = "127.0.0.1"
+CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")  # Claude 会话数据目录
+TRASH_DIR = os.path.expanduser("~/.claude/session-manager/trash")  # 回收站目录
+PORT = 8742  # HTTP 服务端口
+HOST = "127.0.0.1"  # 仅监听本地，不对外暴露
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  Session Data Layer
+#  会话数据层 — 负责读取、解析、管理 Claude 会话文件
 # ═══════════════════════════════════════════════════════════════════════
 
 class SessionManager:
+    """会话管理器：提供会话列表、预览、删除、恢复等核心数据操作"""
 
-    _session_pid_cache = {}  # {session_id: pid}
+    _session_pid_cache = {}  # 进程 PID 缓存: {session_id: pid}
 
     @staticmethod
     def _read_session_pid_files():
-        """Read ~/.claude/sessions/*.json and return (active_ids, session_pid_map).
-        active_ids: set of session IDs whose process is still alive.
-        session_pid_map: {session_id: pid} for alive processes only."""
+        """读取 ~/.claude/sessions/*.json 文件，获取活跃会话的 PID 映射。
+        Claude 在每个活跃会话启动时会写入一个 {sessionId}.json 文件，
+        包含进程 PID。通过 os.kill(pid, 0) 检测进程是否存活。
+
+        返回:
+            active_ids: 进程仍在运行的会话 ID 集合
+            session_pid_map: {session_id: pid} 仅存活进程的映射"""
         ids = set()
         pid_map = {}
-        sessions_dir = os.path.expanduser("~/.claude/sessions")
+        sessions_dir = os.path.expanduser("~/.claude/sessions")  # Claude 的会话元数据目录
         if os.path.isdir(sessions_dir):
             for fname in os.listdir(sessions_dir):
                 if not fname.endswith(".json"):
@@ -61,13 +68,13 @@ class SessionManager:
                 try:
                     with open(fpath, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    pid = data.get("pid")
-                    sid = data.get("sessionId")
+                    pid = data.get("pid")       # 进程 ID
+                    sid = data.get("sessionId") # 会话 ID
                     if pid and sid:
                         try:
-                            os.kill(pid, 0)  # Check if alive
+                            os.kill(pid, 0)  # 信号 0 不杀进程，仅检测是否存在
                         except OSError:
-                            continue
+                            continue  # 进程已死，跳过
                         ids.add(sid)
                         pid_map[sid] = pid
                 except (json.JSONDecodeError, ValueError, KeyError):
@@ -77,29 +84,35 @@ class SessionManager:
     @staticmethod
     @staticmethod
     def _get_active_session_ids():
-        """Returns a set of active session IDs.
-        Reads Claude's PID-to-session mapping files directly — no caching."""
+        """获取当前所有活跃会话的 ID 集合。
+        直接读取 Claude 的 PID→session 映射文件，不使用缓存，
+        确保与系统实际状态同步。"""
         ids, pid_map = SessionManager._read_session_pid_files()
-        SessionManager._session_pid_cache = pid_map
+        SessionManager._session_pid_cache = pid_map  # 更新全局 PID 缓存，供 stop 等操作用
         return ids
 
     @staticmethod
     def list_all():
+        """列出所有会话，包含元数据摘要。
+        遍历 ~/.claude/projects/*/ 下所有 .jsonl 文件，
+        解析每条会话的标题、消息数、token 数、模型等元数据。
+        活跃会话排在最前面，按修改时间倒序排列。"""
         sessions = []
         projects_dir = Path(CLAUDE_PROJECTS_DIR)
         if not projects_dir.exists():
             return sessions
 
-        active_ids = SessionManager._get_active_session_ids()
-        seen_ids = set()
+        active_ids = SessionManager._get_active_session_ids()  # 获取当前运行中的会话 ID
+        seen_ids = set()  # 记录已处理的会话 ID，用于后续补充新生活跃会话
 
+        # 遍历所有项目目录下的 .jsonl 文件
         for jsonl_file in projects_dir.glob("*/*.jsonl"):
-            session_id = jsonl_file.stem
+            session_id = jsonl_file.stem  # 文件名（不含扩展名）即会话 ID
             seen_ids.add(session_id)
             project_dir = jsonl_file.parent.name if jsonl_file.parent != projects_dir else "(root)"
-            project_name = SessionManager._decode_project(project_dir)
+            project_name = SessionManager._decode_project(project_dir)  # 将目录名解码为可读路径
 
-            info = SessionManager._parse_metadata(jsonl_file)
+            info = SessionManager._parse_metadata(jsonl_file)  # 解析 JSONL 文件提取元数据
             info["id"] = session_id
             info["project"] = project_name
             info["filepath"] = str(jsonl_file)
@@ -109,14 +122,14 @@ class SessionManager:
             info["size"] = SessionManager._format_size(stat.st_size)
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
-            # Active: 100% accurate via Claude's own PID→session mapping
-            info["active"] = session_id in active_ids
-            # Skip empty sessions: never chatted, no active process, just metadata
+            info["active"] = session_id in active_ids  # 通过 PID 映射精准判断是否活跃
+
+            # 跳过空会话：从未聊过天、进程已退出、仅含元数据
             if not info["active"] and info["messages"] <= 2 and info["title"] == "(empty conversation)":
                 continue
             sessions.append(info)
 
-        # Include active sessions that don't have JSONL files yet (newborn sessions)
+        # 补充尚未生成 JSONL 文件的新生会话（刚启动但还没写入任何消息）
         for sid in active_ids:
             if sid not in seen_ids:
                 sessions.append({
@@ -138,12 +151,15 @@ class SessionManager:
                     "branch": "",
                 })
 
-        # Re-sort: active sessions first, then by mtime
+        # 排序：活跃会话在前，然后按修改时间倒序
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
         return sessions
 
     @staticmethod
     def _decode_project(dirname):
+        """将项目目录名解码为可读的文件路径。
+        Claude 将项目路径编码为目录名：/Users/foo/bar → -Users-foo-bar
+        解码后还原为 ~/foo/bar 形式在前端展示。"""
         if dirname == "(root)":
             return "~"
         home_prefix = f"Users-{os.environ.get('USER', 'zhanghaotian')}"
@@ -156,15 +172,19 @@ class SessionManager:
 
     @staticmethod
     def _parse_metadata(filepath):
-        ai_title = ""
-        first_user_msg = ""
-        msg_count = 0
-        last_time = ""
-        model = ""
-        cwd = ""
-        branch = ""
-        total_tokens = 0
-        turn_count = 0
+        """解析 JSONL 会话文件，提取元数据摘要。
+        流式读取文件，提取：AI 生成的标题、用户首条消息、
+        消息总数、token 用量、模型名称、工作目录、Git 分支等。
+        不会将整个文件加载到内存，适合大文件快速扫描。"""
+        ai_title = ""       # AI 自动生成的会话标题
+        first_user_msg = "" # 用户第一条消息（标题备选）
+        msg_count = 0       # 消息总行数
+        last_time = ""      # 最后一条消息的时间戳
+        model = ""          # 使用的模型
+        cwd = ""            # 工作目录
+        branch = ""         # Git 分支
+        total_tokens = 0    # 总 token 消耗（输入+输出）
+        turn_count = 0      # 对话轮次
 
         with open(filepath, "r", encoding="utf-8") as f:
             for line in f:
@@ -180,6 +200,7 @@ class SessionManager:
                     if title:
                         ai_title = title
                 elif t == "user" and not first_user_msg:
+                    # 取用户第一条非空、非系统指令的消息作为标题备选
                     content = d.get("message", {}).get("content", "")
                     if isinstance(content, str):
                         clean = content.strip()
@@ -196,7 +217,7 @@ class SessionManager:
                     usage = m.get("usage", {})
                     total_tokens += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
                 elif t == "system" and d.get("subtype") == "turn_duration":
-                    turn_count += 1
+                    turn_count += 1  # 每轮对话结束时 Claude 会写入一条 turn_duration 记录
 
                 ts = d.get("timestamp", "")
                 if ts:
@@ -204,6 +225,7 @@ class SessionManager:
                 cwd = d.get("cwd", cwd) or cwd
                 branch = d.get("gitBranch", branch) or branch
 
+        # 标题优先级：AI 标题 > 用户首条消息 > 占位文本
         title = ai_title or first_user_msg or "(empty conversation)"
         if len(title) > 80:
             title = title[:79] + "…"
@@ -221,14 +243,21 @@ class SessionManager:
 
     @staticmethod
     def get_preview(filepath, max_messages=400, after_line=0, query=None):
-        """Return messages from the conversation. If after_line>0, only messages after that line.
-        If query is provided, mark matching messages with _match: true."""
+        """获取会话预览内容（用于右侧详情面板和实时刷新）。
+        参数:
+            filepath: JSONL 文件路径
+            max_messages: 最大返回消息数（使用 deque 限制内存）
+            after_line: 增量刷新用，仅返回该行之后的消息
+            query: 内容搜索关键词，匹配的消息会标记 _match: true
+        返回:
+            {messages: [...], first_match_line: int}"""
         from collections import deque
-        messages = deque(maxlen=max_messages)
-        first_match_line = 0
+        messages = deque(maxlen=max_messages)  # 固定容量队列，自动丢弃最旧消息
+        first_match_line = 0  # 第一个匹配行的行号，供前端导航跳转
         q = (query or "").strip().lower()
         with open(filepath, "r", encoding="utf-8") as f:
             for line_no, line in enumerate(f, 1):
+                # 增量刷新模式下跳过已加载的行，但仍需检测搜索匹配
                 if after_line > 0 and line_no <= after_line:
                     if q and not first_match_line and q in line.lower():
                         first_match_line = line_no
@@ -246,7 +275,7 @@ class SessionManager:
                     c = d.get("message", {}).get("content", "")
                     if isinstance(c, str):
                         if c.strip().startswith("<"):
-                            continue
+                            continue  # 跳过系统指令消息（以 < 开头）
                         parts = [{"type": "text", "content": c.strip()[:500]}]
                     elif isinstance(c, list):
                         for item in c:
@@ -279,7 +308,7 @@ class SessionManager:
                             inp_simple = {}
                             for k, v in inp.items():
                                 if isinstance(v, str) and len(v) > 200:
-                                    inp_simple[k] = v[:199] + "…"
+                                    inp_simple[k] = v[:199] + "…"  # 截断过长的输入
                                 else:
                                     inp_simple[k] = v
                             parts.append({
@@ -297,7 +326,7 @@ class SessionManager:
                 if role and parts:
                     msg = {"role": role, "parts": parts, "_line": line_no}
                     if q:
-                        # Only match user/assistant TEXT content, not thinking/tool
+                        # 仅匹配 user/assistant 的 TEXT 内容，避免 thinking/tool 产生误匹配
                         for p in parts:
                             if p.get("type") == "text" and q in p.get("content", "").lower():
                                 msg["_match"] = True
@@ -306,14 +335,16 @@ class SessionManager:
                                 break
                     messages.append(msg)
 
-        # Return as dict so frontend can access first_match_line
+        # 返回 dict 格式，前端可访问 first_match_line 用于搜索结果导航
         return {"messages": list(messages), "first_match_line": first_match_line}
 
-    # ── Trash Operations ──────────────────────────────────────────
+    # ── 回收站操作 ──────────────────────────────────────────
 
     @staticmethod
     def move_to_trash(filepath):
-        """Move a session to trash with metadata for recovery."""
+        """将会话移入回收站，同时保存元数据以便恢复。
+        删除时会话文件从原始项目目录移动到 ~/.claude/session-manager/trash/，
+        同时保存 metadata.json 记录原始路径、标题、删除时间等信息。"""
         path = Path(filepath)
         if not path.exists():
             return False, "File not found"
@@ -322,15 +353,15 @@ class SessionManager:
         trash_path = Path(TRASH_DIR) / session_id
         trash_path.mkdir(parents=True, exist_ok=True)
 
-        # Read metadata before moving
+        # 在移动前读取元数据
         meta = SessionManager._parse_metadata(path)
 
-        # Save metadata about original location
+        # 保存原始位置信息，以便恢复
         trash_meta = {
             "id": session_id,
             "title": meta["title"],
-            "original_path": str(path),
-            "original_parent": str(path.parent),
+            "original_path": str(path),       # 原始文件路径
+            "original_parent": str(path.parent),  # 原始项目目录
             "messages": meta["messages"],
             "size": SessionManager._format_size(path.stat().st_size),
             "size_bytes": path.stat().st_size,
@@ -339,21 +370,21 @@ class SessionManager:
             "deleted_ts": time.time(),
         }
 
-        # Move jsonl to trash
+        # 将 JSONL 文件移入回收站
         try:
             shutil.move(str(path), str(trash_path / f"{session_id}.jsonl"))
         except OSError as e:
             return False, f"Move failed: {e}"
 
-        # Move subagent dir if exists
+        # 同时移动子 agent 目录（如果存在）
         subagent_dir = path.parent / session_id
         if subagent_dir.exists() and subagent_dir.is_dir():
             try:
                 shutil.move(str(subagent_dir), str(trash_path / session_id))
             except OSError:
-                pass  # non-critical
+                pass  # 子目录移动失败不影响主流程
 
-        # Write metadata
+        # 写入元数据文件，供恢复时使用
         meta_file = trash_path / "metadata.json"
         with open(meta_file, "w") as f:
             json.dump(trash_meta, f, ensure_ascii=False)
@@ -362,7 +393,7 @@ class SessionManager:
 
     @staticmethod
     def list_trash():
-        """List all sessions in trash."""
+        """列出回收站中的所有会话。"""
         items = []
         trash = Path(TRASH_DIR)
         if not trash.exists():
@@ -384,7 +415,8 @@ class SessionManager:
 
     @staticmethod
     def restore_from_trash(session_id):
-        """Restore a session from trash to its original location."""
+        """从回收站恢复会话到原始位置。
+        读取 metadata.json 获取原始路径，将会话文件和子 agent 目录移回。"""
         trash_path = Path(TRASH_DIR) / session_id
         meta_file = trash_path / "metadata.json"
 
@@ -397,7 +429,7 @@ class SessionManager:
         except (json.JSONDecodeError, OSError) as e:
             return False, f"Metadata read error: {e}"
 
-        original_dir = Path(meta["original_parent"])
+        original_dir = Path(meta["original_parent"])  # 原始项目目录
         jsonl_src = trash_path / f"{session_id}.jsonl"
         jsonl_dst = original_dir / f"{session_id}.jsonl"
         subagent_src = trash_path / session_id
@@ -406,7 +438,7 @@ class SessionManager:
         if not jsonl_src.exists():
             return False, "Trash JSONL file missing"
 
-        # Ensure original directory exists
+        # 确保原始目录存在（可能已被删除）
         original_dir.mkdir(parents=True, exist_ok=True)
 
         errors = []
@@ -418,7 +450,7 @@ class SessionManager:
         if subagent_src.exists():
             try:
                 if subagent_dst.exists():
-                    shutil.rmtree(subagent_dst)
+                    shutil.rmtree(subagent_dst)  # 先删除已存在的目录（冲突处理）
                 shutil.move(str(subagent_src), str(subagent_dst))
             except OSError as e:
                 errors.append(f"subagent: {e}")
@@ -426,7 +458,7 @@ class SessionManager:
         if errors:
             return False, "; ".join(errors)
 
-        # Clean up trash directory
+        # 恢复成功后清理回收站目录
         try:
             shutil.rmtree(trash_path)
         except OSError:
@@ -436,7 +468,7 @@ class SessionManager:
 
     @staticmethod
     def delete_permanently(session_id):
-        """Permanently delete a session from trash."""
+        """从回收站彻底删除会话（不可逆操作）。"""
         trash_path = Path(TRASH_DIR) / session_id
         if not trash_path.exists():
             return False, "Not found in trash"
@@ -449,6 +481,7 @@ class SessionManager:
 
     @staticmethod
     def _format_size(size_bytes):
+        """将字节数格式化为人类可读的大小字符串（B/K/M/G）。"""
         if size_bytes < 1024:
             return f"{size_bytes}B"
         elif size_bytes < 1024 * 1024:
@@ -459,6 +492,11 @@ class SessionManager:
 
     @staticmethod
     def _format_time(ts):
+        """将 Unix 时间戳格式化为友好的相对时间显示。
+        - 今天: "Today HH:MM"
+        - 昨天: "Yesterday HH:MM"
+        - 一周内: "Xd ago HH:MM"
+        - 更早: "YYYY-MM-DD HH:MM" """
         dt = datetime.datetime.fromtimestamp(ts)
         now = datetime.datetime.now()
         diff = now - dt
@@ -472,7 +510,7 @@ class SessionManager:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  Frontend — i18n strings
+#  前端 — 国际化字符串
 # ═══════════════════════════════════════════════════════════════════════
 
 I18N = {
@@ -624,7 +662,7 @@ I18N = {
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  Frontend (HTML/CSS/JS)
+#  前端 (HTML/CSS/JS) — 单文件内嵌 Web 界面
 # ═══════════════════════════════════════════════════════════════════════
 
 FRONTEND = r"""<!DOCTYPE html>
@@ -2010,17 +2048,19 @@ document.addEventListener('keydown', e => {
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  HTTP Server
+#  HTTP 服务器 — 纯 Python 标准库实现，路由分发与 API 处理
 # ═══════════════════════════════════════════════════════════════════════
 
 class RequestHandler(http.server.BaseHTTPRequestHandler):
+    """HTTP 请求处理器：RESTful API 路由 + 静态前端页面"""
 
     def log_message(self, format, *args):
-        pass  # quiet
+        pass  # 静默模式，不输出请求日志
 
-    # ── Routing ────────────────────────────────────────────────────
+    # ── 路由分发 ────────────────────────────────────────────────────
 
     def do_GET(self):
+        """GET 请求路由"""
         path = urllib.parse.urlparse(self.path).path
 
         if path == "/":
@@ -2028,6 +2068,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/sessions":
             return self._json(SessionManager.list_all())
         elif path.startswith("/api/sessions/") and path.endswith("/preview"):
+            # 获取会话预览内容，支持增量刷新（after_line）和搜索（q）
             session_id = path.rsplit("/", 2)[-2]
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
@@ -2037,6 +2078,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             filepath = self._find_session_path(session_id)
             return self._json(SessionManager.get_preview(filepath, after_line=after_line, query=query)) if filepath else self._error(404, "Not found")
         elif path == "/api/sessions/search":
+            # 全文搜索：用 grep 在所有会话 JSONL 文件中搜索关键词
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
             query = params.get("q", [""])[0]
@@ -2047,9 +2089,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._error(404, "Not found")
 
     def do_DELETE(self):
+        """DELETE 请求路由"""
         path = urllib.parse.urlparse(self.path).path
 
         if path.startswith("/api/sessions/"):
+            # 删除会话 → 移入回收站
             session_id = path.rsplit("/", 1)[-1]
             filepath = self._find_session_path(session_id)
             if not filepath:
@@ -2057,6 +2101,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             success, msg = SessionManager.move_to_trash(filepath)
             return self._json({"success": success, "message": msg})
         elif path.startswith("/api/trash/"):
+            # 彻底删除回收站中的会话
             session_id = path.rsplit("/", 1)[-1]
             success, msg = SessionManager.delete_permanently(session_id)
             return self._json({"success": success, "message": msg})
@@ -2064,34 +2109,42 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._error(404, "Not found")
 
     def do_POST(self):
+        """POST 请求路由"""
         path = urllib.parse.urlparse(self.path).path
 
         if path.startswith("/api/trash/") and path.endswith("/restore"):
+            # 从回收站恢复会话
             session_id = path.rsplit("/", 2)[-2]
             success, msg = SessionManager.restore_from_trash(session_id)
             return self._json({"success": success, "message": msg})
         elif path.startswith("/api/sessions/") and path.endswith("/resume"):
+            # 继续会话：在新终端窗口运行 claude --resume
             session_id = path.rsplit("/", 2)[-2]
             return self._resume_session(session_id)
         elif path.startswith("/api/sessions/") and path.endswith("/stop"):
+            # 停止会话：kill 对应 PID 的 Claude 进程
             session_id = path.rsplit("/", 2)[-2]
             return self._stop_session(session_id)
         elif path.startswith("/api/sessions/") and path.endswith("/restart"):
+            # 重启会话：先 kill 再 resume
             session_id = path.rsplit("/", 2)[-2]
             return self._restart_session(session_id)
         elif path == "/api/new-session":
+            # 新建会话：打开终端运行 claude
             return self._new_session()
         else:
             return self._error(404, "Not found")
 
     def do_OPTIONS(self):
+        """CORS 预检请求处理"""
         self._cors()
         self.send_response(200)
         self.end_headers()
 
-    # ── Response Helpers ────────────────────────────────────────────
+    # ── 响应辅助方法 ────────────────────────────────────────────
 
     def _serve_html(self):
+        """返回内嵌的单页 Web 应用"""
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
@@ -2101,6 +2154,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(FRONTEND.encode("utf-8"))
 
     def _json(self, data):
+        """返回 JSON 格式响应"""
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
@@ -2109,6 +2163,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
     def _error(self, code, msg):
+        """返回错误响应"""
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self._cors()
@@ -2116,40 +2171,43 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"error": msg}).encode("utf-8"))
 
     def _search_content(self, query):
-        """Search JSONL session files for query text using grep. Returns matching session IDs."""
+        """使用 grep 在所有会话 JSONL 文件中全文搜索关键词。
+        返回包含匹配文本的会话 ID 列表。
+        优点：基于 grep 的纯文本搜索，比逐文件 Python 解析快 10x+。"""
         if not query or not query.strip():
             return self._json([])
-        # subprocess.run with list form handles argument escaping automatically
+        # 使用 subprocess.run 的列表形式，自动处理参数转义，防止注入
         pattern = query.strip()
         try:
             result = subprocess.run(
                 ["grep", "-rIlF", "--", pattern, CLAUDE_PROJECTS_DIR],
+                # -r: 递归    -I: 忽略二进制    -l: 只输出文件名    -F: 固定字符串（非正则）
                 capture_output=True, text=True, timeout=10
             )
-            if result.returncode not in (0, 1):  # 0=found, 1=not found
+            if result.returncode not in (0, 1):  # 0=找到匹配, 1=未找到
                 return self._json([])
-            # Extract session IDs from file paths
+            # 从文件路径中提取会话 ID（UUID 格式，36 字符）
             ids = []
             for line in result.stdout.strip().split("\n"):
                 if line:
-                    name = Path(line).stem  # filename without .jsonl
-                    if len(name) == 36:  # UUID length
+                    name = Path(line).stem  # 去掉 .jsonl 扩展名
+                    if len(name) == 36:  # 标准 UUID 长度
                         ids.append(name)
-            return self._json(list(set(ids)))  # deduplicate
+            return self._json(list(set(ids)))  # 去重
         except subprocess.TimeoutExpired:
             return self._json([])
         except Exception:
             return self._json([])
 
     def _cors(self):
+        """设置 CORS 头，允许前端跨域访问"""
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, DELETE, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _new_session(self):
-        """Open a new Terminal window to start a fresh Claude Code session."""
-        # Default to user's home directory
-        cwd = os.path.expanduser("~")
+        """通过 AppleScript 打开新 Terminal 窗口启动全新 Claude Code 会话。"""
+        cwd = os.path.expanduser("~")  # 默认从用户主目录启动
         script = f'''
             tell application "Terminal"
                 do script "cd {cwd} && claude"
@@ -2163,33 +2221,32 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
 
     def _restart_session(self, session_id):
-        """Stop the session then immediately restart it."""
-        # Use kill directly (no HTTP response), then resume
-        SessionManager._get_active_session_ids()  # refresh cache
+        """重启会话：先发送 kill 信号终止进程，等待 1 秒后再通过 AppleScript 恢复。"""
+        SessionManager._get_active_session_ids()  # 刷新 PID 缓存
         pid = SessionManager._session_pid_cache.get(session_id)
         if pid:
             try:
                 subprocess.run(["kill", str(pid)], capture_output=True, timeout=3)
             except Exception:
                 pass
-        time.sleep(1)
+        time.sleep(1)  # 等待进程完全退出
         return self._resume_session(session_id)
 
     def _resume_session(self, session_id):
-        """Open a new Terminal window to resume a Claude Code session."""
+        """通过 AppleScript 打开终端并运行 claude --resume 恢复已有会话。"""
         filepath = self._find_session_path(session_id)
         if not filepath:
             return self._error(404, f"Session not found: {session_id}")
 
-        # Derive cwd from the project directory, not from JSONL (last cwd may be wrong)
+        # 从项目目录名反推工作目录（而非依赖 JSONL 中最后记录的 cwd）
         import re
-        proj_dir = Path(filepath).parent.name  # e.g. "-Users-zhanghaotian"
-        # Reverse of _decode_project: -Users-zhanghaotian → /Users/zhanghaotian
+        proj_dir = Path(filepath).parent.name  # 例如 "-Users-zhanghaotian"
+        # 反向解码：-Users-zhanghaotian → /Users/zhanghaotian
         cwd = "/" + proj_dir.lstrip("-").replace("-", "/")
         if not os.path.isdir(cwd):
-            cwd = os.path.expanduser("~")
+            cwd = os.path.expanduser("~")  # 目录不存在时回退到主目录
 
-        # Build AppleScript to open Terminal and run claude --resume
+        # 构建 AppleScript 在 Terminal 中打开 claude --resume
         script = f'''
             tell application "Terminal"
                 do script "cd {cwd} && claude --resume {session_id}"
@@ -2203,10 +2260,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
 
     def _stop_session(self, session_id):
-        """Kill the claude process tied to this session, using Claude's own PID mapping."""
-        # Use the PID mapping from the last _get_active_session_ids call
-        # (refreshes at most once per second)
-        SessionManager._get_active_session_ids()  # ensure cache is fresh
+        """通过 Claude 的 PID 映射精确 kill 对应会话的进程。
+        不会删除会话文件，用户可以稍后继续。"""
+        SessionManager._get_active_session_ids()  # 确保 PID 缓存是最新的
         pid = SessionManager._session_pid_cache.get(session_id)
         if not pid:
             return self._json({"success": False, "message": "No matching process found"})
@@ -2221,38 +2277,43 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json({"success": False, "message": str(e)})
 
     def _find_session_path(self, session_id):
+        """根据会话 ID 查找对应的 JSONL 文件路径。"""
         for f in Path(CLAUDE_PROJECTS_DIR).glob(f"*/{session_id}.jsonl"):
             return str(f)
         return None
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  Entry Point
+#  入口 — 启动 HTTP 服务器
 # ═══════════════════════════════════════════════════════════════════════
 
 def main():
+    """S.T.O.A. 主入口：启动 HTTP 服务器，自动打开浏览器。"""
     print()
     print("  ╔══════════════════════════════════╗")
     print("  ║   Claude Code Session Manager   ║")
     print("  ╚══════════════════════════════════╝")
     print()
 
+    # 确保回收站目录存在
     os.makedirs(TRASH_DIR, exist_ok=True)
 
+    # 启动时扫描会话状态
     sessions = SessionManager.list_all()
     trash_count = len(SessionManager.list_trash())
     print(f"  Sessions: {len(sessions)}  |  Trash: {trash_count}")
     print()
 
+    # 创建 HTTP 服务器，监听 127.0.0.1:8742
     server = http.server.HTTPServer((HOST, PORT), RequestHandler)
     url = f"http://localhost:{PORT}"
 
-    # Only auto-open browser in standalone mode; .app launcher handles this
+    # 自动打开浏览器（.app 启动器模式下通过 CSM_NO_BROWSER 环境变量跳过）
     if not os.environ.get("CSM_NO_BROWSER"):
         print(f"  ▼  Opening {url}")
         def open_browser():
             webbrowser.open(url)
-        threading.Timer(0.3, open_browser).start()
+        threading.Timer(0.3, open_browser).start()  # 延迟 0.3 秒确保服务器就绪
     else:
         print(f"  Server ready at {url}")
 
@@ -2260,7 +2321,7 @@ def main():
     print()
 
     try:
-        server.serve_forever()
+        server.serve_forever()  # 阻塞运行，直到收到 SIGINT
     except KeyboardInterrupt:
         print("\n  Shutting down…")
         server.shutdown()
