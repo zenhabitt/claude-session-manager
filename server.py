@@ -19,6 +19,7 @@ Usage:
 import http.server
 import json
 import os
+import sys
 import webbrowser
 import urllib.parse
 import threading
@@ -27,6 +28,7 @@ import time
 import subprocess
 import re
 import datetime
+from collections import Counter
 from pathlib import Path
 
 # ── 配置 ────────────────────────────────────────────────────────────
@@ -37,6 +39,7 @@ CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")  # Claude 会话�
 TRASH_DIR = os.path.expanduser("~/.claude/session-manager/trash")  # 回收站目录
 PORT = 8742  # HTTP 服务端口
 HOST = "127.0.0.1"  # 仅监听本地，不对外暴露
+SERVER_STARTED_AT = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # 服务启动时间戳
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -46,49 +49,59 @@ HOST = "127.0.0.1"  # 仅监听本地，不对外暴露
 class SessionManager:
     """会话管理器：提供会话列表、预览、删除、恢复等核心数据操作"""
 
-    _session_pid_cache = {}  # 进程 PID 缓存: {session_id: pid}
+    _session_pid_cache = {}  # {session_id: pid} — 仅存活进程
+    _session_data_cache = {}  # {session_id: full_data} — 完整 PID 文件数据
 
     @staticmethod
     def _read_session_pid_files():
-        """读取 ~/.claude/sessions/*.json 文件，获取活跃会话的 PID 映射。
-        Claude 在每个活跃会话启动时会写入一个 {sessionId}.json 文件，
-        包含进程 PID。通过 os.kill(pid, 0) 检测进程是否存活。
-
-        返回:
-            active_ids: 进程仍在运行的会话 ID 集合
-            session_pid_map: {session_id: pid} 仅存活进程的映射"""
+        """读取 ~/.claude/sessions/*.json 文件，一次性提取所有字段并缓存。
+        下游调用者无需重复打开和解析这些文件。"""
         ids = set()
         pid_map = {}
-        sessions_dir = os.path.expanduser("~/.claude/sessions")  # Claude 的会话元数据目录
+        data_map = {}
+        sessions_dir = os.path.expanduser("~/.claude/sessions")
         if os.path.isdir(sessions_dir):
-            for fname in os.listdir(sessions_dir):
+            try:
+                fnames = os.listdir(sessions_dir)
+            except OSError:
+                fnames = []
+            for fname in fnames:
                 if not fname.endswith(".json"):
                     continue
                 fpath = os.path.join(sessions_dir, fname)
-                try:
-                    with open(fpath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    pid = data.get("pid")       # 进程 ID
-                    sid = data.get("sessionId") # 会话 ID
-                    if pid and sid:
-                        try:
-                            os.kill(pid, 0)  # 信号 0 不杀进程，仅检测是否存在
-                        except OSError:
-                            continue  # 进程已死，跳过
-                        ids.add(sid)
-                        pid_map[sid] = pid
-                except (json.JSONDecodeError, ValueError, KeyError):
-                    pass
+                # 最多重试 3 次，防止 Claude 正在写入时读到截断 JSON
+                for attempt in range(3):
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        pid = data.get("pid")
+                        sid = data.get("sessionId")
+                        if pid and sid:
+                            try:
+                                os.kill(pid, 0)
+                            except PermissionError:
+                                pass  # 无权限检测，保守认为存活
+                            except OSError:
+                                break  # ESRCH: 进程已死，跳过
+                            else:
+                                ids.add(sid)
+                            pid_map[sid] = pid
+                            data_map[sid] = data
+                        break
+                    except (OSError, json.JSONDecodeError, ValueError):
+                        if attempt < 2:
+                            time.sleep(0.05)
+                        # 最后一次也失败则静默跳过该文件
+        SessionManager._session_pid_cache = pid_map
+        SessionManager._session_data_cache = data_map
         return ids, pid_map
 
-    @staticmethod
     @staticmethod
     def _get_active_session_ids():
         """获取当前所有活跃会话的 ID 集合。
         直接读取 Claude 的 PID→session 映射文件，不使用缓存，
         确保与系统实际状态同步。"""
         ids, pid_map = SessionManager._read_session_pid_files()
-        SessionManager._session_pid_cache = pid_map  # 更新全局 PID 缓存，供 stop 等操作用
         return ids
 
     @staticmethod
@@ -102,7 +115,15 @@ class SessionManager:
         if not projects_dir.exists():
             return sessions
 
-        active_ids = SessionManager._get_active_session_ids()  # 获取当前运行中的会话 ID
+        active_ids = SessionManager._get_active_session_ids()  # 同时填充 pid_cache + data_cache
+
+        # 从缓存读取 status（已在 _read_session_pid_files 中一次性提取）
+        active_status = {}
+        for sid in SessionManager._session_data_cache:
+            pdata = SessionManager._session_data_cache[sid]
+            raw = pdata.get("status")
+            active_status[sid] = raw if raw else "plugin"
+
         seen_ids = set()  # 记录已处理的会话 ID，用于后续补充新生活跃会话
 
         # 遍历所有项目目录下的 .jsonl 文件
@@ -123,6 +144,7 @@ class SessionManager:
             info["mtime"] = stat.st_mtime
             info["date"] = SessionManager._format_time(stat.st_mtime)
             info["active"] = session_id in active_ids  # 通过 PID 映射精准判断是否活跃
+            info["status"] = active_status.get(session_id, "idle") if info["active"] else ""
 
             # 跳过空会话：从未聊过天、进程已退出、仅含元数据
             if not info["active"] and info["messages"] <= 2 and info["title"] == "(empty conversation)":
@@ -143,6 +165,7 @@ class SessionManager:
                     "mtime": time.time(),
                     "date": "Just started",
                     "active": True,
+                    "status": active_status.get(sid, "idle"),
                     "messages": 0,
                     "turns": 0,
                     "tokens": 0,
@@ -154,6 +177,96 @@ class SessionManager:
         # 排序：活跃会话在前，然后按修改时间倒序
         sessions.sort(key=lambda s: (not s["active"], -s["mtime"]))
         return sessions
+
+    @staticmethod
+    def get_dashboard():
+        """Return aggregated dashboard statistics."""
+        sessions = SessionManager.list_all()
+        # list_all() 内部已调用 _get_active_session_ids() 填充 _session_pid_cache
+        pid_map = SessionManager._session_pid_cache
+
+        total_messages = 0
+        total_tokens = 0
+        total_turns = 0
+        model_counter = Counter()
+        model_tokens = Counter()
+        active_list = []
+        recent = []
+
+        for s in sessions:
+            total_messages += s.get("messages", 0)
+            total_tokens += s.get("tokens", 0)
+            total_turns += s.get("turns", 0)
+            model = s.get("model") or "(unknown)"
+            model_counter[model] += 1
+            model_tokens[model] += s.get("tokens", 0)
+
+            if s["active"]:
+                pid = pid_map.get(s["id"])
+                status = "idle"
+                cwd = s.get("project", "~")
+                uptime_seconds = 0
+                last_activity = s.get("last_time") or ""
+                # 从缓存读取实时状态（_read_session_pid_files 已一次性提取）
+                pdata = SessionManager._session_data_cache.get(s["id"], {})
+                if pdata:
+                    raw_status = pdata.get("status")
+                    status = raw_status if raw_status else "plugin"
+                    cwd = pdata.get("cwd", cwd)
+                    started = pdata.get("startedAt", 0)
+                    if started:
+                        uptime_seconds = int((time.time() * 1000 - started) / 1000)
+                    last_act = pdata.get("updatedAt", 0)
+                    if last_act:
+                        last_activity = datetime.datetime.fromtimestamp(
+                            last_act / 1000
+                        ).strftime("%Y-%m-%d %H:%M:%S")
+
+                active_list.append({
+                    "id": s["id"],
+                    "title": s["title"],
+                    "model": model,
+                    "status": status,
+                    "cwd": cwd,
+                    "uptime_seconds": uptime_seconds,
+                    "last_activity": last_activity,
+                    "messages": s.get("messages", 0),
+                })
+
+        # Recent sessions (top 5 by mtime)
+        all_sorted = sorted(sessions, key=lambda s: s.get("mtime", 0), reverse=True)
+        for s in all_sorted[:5]:
+            recent.append({
+                "id": s["id"],
+                "title": s["title"],
+                "model": s.get("model") or "(unknown)",
+                "last_time": s.get("last_time") or s.get("date", ""),
+                "active": s["active"],
+            })
+
+        # Model stats sorted by usage
+        model_stats = []
+        for model, count in model_counter.most_common():
+            model_stats.append({
+                "model": model,
+                "sessions": count,
+                "tokens": model_tokens.get(model, 0),
+            })
+
+        return {
+            "overview": {
+                "total_sessions": len(sessions),
+                "active_sessions": sum(1 for s in sessions if s["active"]),
+                "busy_sessions": sum(1 for a in active_list if a["status"] == "busy"),
+                "idle_sessions": sum(1 for a in active_list if a["status"] == "idle"),
+                "total_messages": total_messages,
+                "total_tokens": total_tokens,
+                "total_turns": total_turns,
+            },
+            "active_list": active_list,
+            "model_stats": model_stats,
+            "recent_sessions": recent,
+        }
 
     @staticmethod
     def _decode_project(dirname):
@@ -209,7 +322,7 @@ class SessionManager:
                     elif isinstance(content, list):
                         for item in content:
                             if isinstance(item, dict) and item.get("type") == "text":
-                                first_user_msg = item["text"][:120]
+                                first_user_msg = (item.get("text") or "")[:120]
                                 break
                 elif t == "assistant":
                     m = d.get("message", {})
@@ -281,7 +394,7 @@ class SessionManager:
                         for item in c:
                             if isinstance(item, dict):
                                 if item.get("type") == "text":
-                                    parts.append({"type": "text", "content": item["text"][:500]})
+                                    parts.append({"type": "text", "content": (item.get("text") or "")[:500]})
                                 elif item.get("type") == "tool_result":
                                     result_text = str(item.get("content", ""))
                                     is_error = item.get("is_error", False)
@@ -417,6 +530,8 @@ class SessionManager:
     def restore_from_trash(session_id):
         """从回收站恢复会话到原始位置。
         读取 metadata.json 获取原始路径，将会话文件和子 agent 目录移回。"""
+        if not SessionManager._validate_session_id(session_id):
+            return False, "Invalid session ID"
         trash_path = Path(TRASH_DIR) / session_id
         meta_file = trash_path / "metadata.json"
 
@@ -429,7 +544,10 @@ class SessionManager:
         except (json.JSONDecodeError, OSError) as e:
             return False, f"Metadata read error: {e}"
 
-        original_dir = Path(meta["original_parent"])  # 原始项目目录
+        original_parent = meta.get("original_parent")
+        if not original_parent:
+            return False, "Invalid metadata: missing original_parent"
+        original_dir = Path(original_parent)
         jsonl_src = trash_path / f"{session_id}.jsonl"
         jsonl_dst = original_dir / f"{session_id}.jsonl"
         subagent_src = trash_path / session_id
@@ -469,6 +587,8 @@ class SessionManager:
     @staticmethod
     def delete_permanently(session_id):
         """从回收站彻底删除会话（不可逆操作）。"""
+        if not SessionManager._validate_session_id(session_id):
+            return False, "Invalid session ID"
         trash_path = Path(TRASH_DIR) / session_id
         if not trash_path.exists():
             return False, "Not found in trash"
@@ -507,6 +627,13 @@ class SessionManager:
         elif diff.days < 7:
             return f"{diff.days}d ago {dt.strftime('%H:%M')}"
         return dt.strftime("%Y-%m-%d %H:%M")
+
+    _SESSION_ID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+
+    @classmethod
+    def _validate_session_id(cls, session_id):
+        """验证 session_id 是否为合法 UUID 格式，防止 glob 注入。"""
+        return bool(cls._SESSION_ID_RE.match(session_id))
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -559,10 +686,13 @@ I18N = {
         "size": "大小",
         "deletedAt": "删除时间",
         "loading": "加载中…",
+        "noData": "暂无数据",
+        "failed": "操作失败",
+        "prevMatch": "上一个",
+        "nextMatch": "下一个",
         "noMessages": "没有找到消息",
         "loadFailed": "加载预览失败",
         "deleted": "已删除",
-        "deleted1": "已删除",
         "restored": "已恢复",
         "permDeleted": "已彻底删除",
         "confirmDeleteBtn": "确认删除",
@@ -574,12 +704,30 @@ I18N = {
         "batchBar": "已选择",
         "batchDelete": "批量删除",
         "refresh": "刷新",
+        "settingsBtn": "设置",
+        "themeLabel": "切换主题",
+        "langLabel": "English / 中文",
+        "restartBtn": "重启 S.T.O.A.",
         "scrollToBottom": "回到底部",
         "newChat": "新对话",
         "newChatStarted": "已在新终端中打开",
         "newSessionPlaceholder": "新会话",
         "resume": "继续对话",
         "resumed": "已在新终端中打开",
+        "narrowHint1": "预览窗过窄",
+        "narrowHint2": "请调整浏览器宽度，或折叠左侧栏",
+        "dashboardTab": "仪表盘",
+        "dashboardOverview": "概览",
+        "totalSessions": "总会话",
+        "activeSessions": "活跃会话",
+        "totalMessages": "总消息",
+        "totalTokens": "总 Token",
+        "busyStatus": "处理中",
+        "idleStatus": "空闲",
+        "pluginStatus": "插件活跃",
+        "modelUsage": "模型用量",
+        "recentActivity": "最近活动",
+        "uptime": "运行时长",
         "showNonDialogue": "显示过程信息",
         "hideNonDialogue": "隐藏过程信息",
         "searchContent": "搜索会话内容",
@@ -631,10 +779,13 @@ I18N = {
         "size": "Size",
         "deletedAt": "Deleted at",
         "loading": "Loading…",
+        "noData": "No data",
+        "failed": "Failed",
+        "prevMatch": "Previous",
+        "nextMatch": "Next",
         "noMessages": "No messages found",
         "loadFailed": "Failed to load preview",
         "deleted": "Deleted",
-        "deleted1": "Deleted",
         "restored": "Restored",
         "permDeleted": "Permanently deleted",
         "confirmDeleteBtn": "Move to Trash",
@@ -646,12 +797,30 @@ I18N = {
         "batchBar": "selected",
         "batchDelete": "Delete selected",
         "refresh": "Refresh",
+        "settingsBtn": "Settings",
+        "themeLabel": "Toggle Theme",
+        "langLabel": "English / 中文",
+        "restartBtn": "Restart S.T.O.A.",
         "scrollToBottom": "Scroll to bottom",
         "newChat": "New Chat",
         "newChatStarted": "Opened in new terminal",
         "newSessionPlaceholder": "New Session",
         "resume": "Continue",
         "resumed": "Opened in new terminal",
+        "narrowHint1": "Preview too narrow",
+        "narrowHint2": "Resize window or collapse sidebar",
+        "dashboardTab": "Dashboard",
+        "dashboardOverview": "Overview",
+        "totalSessions": "Total Sessions",
+        "activeSessions": "Active",
+        "totalMessages": "Total Messages",
+        "totalTokens": "Total Tokens",
+        "busyStatus": "Busy",
+        "idleStatus": "Idle",
+        "pluginStatus": "Plugin Active",
+        "modelUsage": "Model Usage",
+        "recentActivity": "Recent Activity",
+        "uptime": "Uptime",
         "showNonDialogue": "Show process info",
         "hideNonDialogue": "Hide process info",
         "searchContent": "Search in messages",
@@ -678,14 +847,17 @@ FRONTEND = r"""<!DOCTYPE html>
     --text: #c4bbb4; --text-dim: #877f76; --text-bright: #e8e0d8;
     --accent: #c4944a; --accent-hover: #d4a55a;
     --danger: #c46a5e; --danger-hover: #d47a6e; --danger-bg: rgba(196,106,94,0.1);
+    --panel-left-width: 360px;
     --success: #7ea882; --warn: #d4a84b;
     --radius: 8px;
     --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
     --mono: "SF Mono", "Fira Code", "JetBrains Mono", monospace;
+    --tag-project-bg: rgba(66,202,253,0.15); --tag-project-color: #42CAFD;
   }
   [data-theme="cool"] {
     --bg: #1a1b1e; --surface: #25262b; --surface2: #2c2e33; --border: #373a40;
     --text: #c1c2c5; --text-dim: #909296; --text-bright: #e0e0e0;
+    --tag-project-bg: rgba(108,138,255,0.15); --tag-project-color: #8ba3ff;
     --accent: #6c8aff; --accent-hover: #8ba3ff;
     --danger: #ff6b6b; --danger-hover: #ff8787; --danger-bg: rgba(255,107,107,0.08);
     --success: #69db7c; --warn: #ffd43b;
@@ -695,28 +867,14 @@ FRONTEND = r"""<!DOCTYPE html>
   }
 
   /* Theme-dependent color overrides */
-  [data-theme="warm"] .session-card .project-tag { background: rgba(196,148,74,0.12); }
-  [data-theme="cool"] .session-card .project-tag { background: rgba(108,138,255,0.12); }
   [data-theme="warm"] .part-tool { background: rgba(196,148,74,0.06); border-color: rgba(196,148,74,0.15); }
   [data-theme="cool"] .part-tool { background: rgba(108,138,255,0.06); border-color: rgba(108,138,255,0.15); }
   [data-theme="warm"] .part-tool-result { background: rgba(196,148,74,0.04); border-color: rgba(196,148,74,0.1); }
   [data-theme="cool"] .part-tool-result { background: rgba(108,138,255,0.04); border-color: rgba(108,138,255,0.1); }
   [data-theme="warm"] .part-thinking .thinking-content { border-left-color: var(--accent); }
   [data-theme="cool"] .part-thinking .thinking-content { border-left-color: #6a5acd; }
-  [data-theme="warm"] .session-card.active { border-color: rgba(196,148,74,0.3); }
-  [data-theme="cool"] .session-card.active { border-color: rgba(105,219,124,0.25); }
   [data-theme="warm"] .part-tool-result.error { border-color: rgba(196,106,94,0.25); }
   [data-theme="cool"] .part-tool-result.error { border-color: rgba(255,107,107,0.2); }
-  @keyframes breathe-warm {
-    0%, 100% { box-shadow: 0 0 0 rgba(196,148,74,0); }
-    50% { box-shadow: 0 0 10px rgba(196,148,74,0.2); }
-  }
-  @keyframes breathe-cool {
-    0%, 100% { box-shadow: 0 0 0 rgba(105,219,124,0); }
-    50% { box-shadow: 0 0 8px rgba(105,219,124,0.15); }
-  }
-  [data-theme="warm"] .session-card.active { animation: breathe-warm 2.5s ease-in-out infinite; }
-  [data-theme="cool"] .session-card.active { animation: breathe-cool 2.5s ease-in-out infinite; }
 
   /* Base styles that don't depend on theme variables */
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -731,10 +889,8 @@ FRONTEND = r"""<!DOCTYPE html>
     padding: 0 20px; height: 48px; display: flex; align-items: center;
     justify-content: space-between; flex-shrink: 0; user-select: none;
   }
-  header h1 { font-size: 14px; font-weight: 600; color: var(--text-bright); }
+  header h1 { font-size: 18px; font-weight: 600; color: var(--text-bright); font-family: 'Didot', 'Hoefler Text', 'Palatino Linotype', 'Book Antiqua', 'Palatino', 'Georgia', serif; letter-spacing: 1.5px; }
   .header-right { display: flex; align-items: center; gap: 16px; }
-  .header-stats { font-size: 12px; color: var(--text-dim); }
-  .header-stats span { color: var(--accent); font-weight: 600; }
   .lang-btn {
     font-size: 11px; padding: 3px 10px; border: 1px solid var(--border);
     border-radius: 4px; background: transparent; color: var(--text-dim);
@@ -743,13 +899,41 @@ FRONTEND = r"""<!DOCTYPE html>
   .lang-btn:hover { color: var(--text); border-color: var(--text-dim); }
   .lang-btn:active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+  .settings-wrap { position: relative; }
+  .settings-menu {
+    visibility: hidden; position: absolute; top: 100%; right: 0; margin-top: 6px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px; z-index: 100; min-width: 160px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    transform: translateY(-8px); opacity: 0;
+    transition: transform .2s cubic-bezier(.16,1,.3,1), opacity .15s ease-out, visibility .2s;
+  }
+  .settings-menu.show {
+    visibility: visible; transform: translateY(0); opacity: 1;
+  }
+  .settings-menu button {
+    display: block; width: 100%; padding: 6px 12px; border: none;
+    background: transparent; color: var(--text); font-size: 12px;
+    font-family: var(--font); cursor: pointer; text-align: left; border-radius: 4px;
+    transition: background .12s;
+  }
+  .settings-menu button:hover { background: var(--surface2); }
+  .settings-sep { height: 1px; background: var(--border); margin: 4px 8px; }
+  .settings-info { padding: 4px 12px; font-size: 10px; color: var(--text-dim); }
+
   /* ── Main Layout ── */
   .main { display: flex; flex: 1; overflow: hidden; }
 
   /* ── Left Panel ── */
   .panel-left {
-    width: 390px; min-width: 310px; border-right: 1px solid var(--border);
-    display: flex; flex-direction: column; background: var(--surface);
+    width: var(--panel-left-width); flex-shrink: 0; background: var(--surface);
+    overflow: hidden;
+    transition: width .35s cubic-bezier(.16,1,.3,1);
+  }
+  .panel-left.collapsed { width: 0; }
+  .panel-left-inner {
+    width: var(--panel-left-width); height: 100%; display: flex; flex-direction: column;
+    border-right: 1px solid var(--border);
   }
   .search-bar { display: flex; gap: 6px; padding: 12px; flex-shrink: 0; }
   .search-bar input {
@@ -776,15 +960,21 @@ FRONTEND = r"""<!DOCTYPE html>
 
   .tab-bar {
     display: flex; padding: 0 12px 8px; gap: 2px; flex-shrink: 0;
+    position: relative;
   }
   .tab-bar button {
-    flex: 1; padding: 6px 0; border: none; border-bottom: 2px solid transparent;
+    flex: 1; padding: 6px 0; border: none;
     background: transparent; color: var(--text-dim); font-size: 12px;
-    font-family: var(--font); cursor: pointer; transition: background .15s, border-color .15s, color .15s, opacity .15s;
+    font-family: var(--font); cursor: pointer; transition: color .15s;
+    position: relative; z-index: 1;
   }
   .tab-bar button:hover { color: var(--text); }
-  .tab-bar button.active {
-    color: var(--accent); border-bottom-color: var(--accent);
+  .tab-bar button.active { color: var(--accent); }
+  .tab-indicator {
+    position: absolute; bottom: 8px; height: 2px;
+    background: var(--accent); border-radius: 1px;
+    transition: left .2s cubic-bezier(.4,0,.2,1), width .2s cubic-bezier(.4,0,.2,1);
+    z-index: 0;
   }
   .tab-bar .badge {
     background: var(--danger-bg); color: var(--danger);
@@ -802,65 +992,96 @@ FRONTEND = r"""<!DOCTYPE html>
   .sort-bar button:hover { color: var(--text); border-color: var(--text-dim); }
   .sort-bar button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-  .session-list { flex: 1; overflow-y: auto; padding: 0 8px 8px; }
+  .tab-strip-wrapper { flex: 1; overflow: hidden; position: relative; }
+  .tab-strip { display: flex; height: 100%; transition: transform .35s cubic-bezier(.16,1,.3,1); }
+  .tab-panel { width: 100%; flex-shrink: 0; overflow-y: auto; }
+
+  .session-list { height: 100%; overflow-y: auto; padding: 0 20px 8px; }
+
+  /* ── Dashboard ── */
+  .dashboard-panel { height: 100%; overflow-y: auto; padding: 12px 16px; }
+  .dash-cards { margin-bottom: 16px; }
+  .dash-card { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px; }
+  .dash-card .num { font-size: 18px; font-weight: 700; color: var(--text-bright); }
+  .dash-card .lbl { font-size: 11px; color: var(--text-dim); }
+
+  .dash-section { margin-bottom: 16px; }
+  .dash-section h3 { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+
+  .dash-active-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px; cursor: pointer; transition: background .15s, box-shadow .4s ease-out; position: relative; transform-style: preserve-3d; }
+  .dash-active-item:hover { background: var(--surface2); box-shadow: 0 12px 36px rgba(0,0,0,0.4); z-index: 10; }
+  .dash-active-item .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dash-active-item .status-dot.busy { background: #FD151B; animation: pulse-dot 1s ease-in-out infinite; }
+  .dash-active-item .status-dot.idle { background: #7AFDD6; animation: none; }
+  .dash-active-item .status-dot.plugin { background: #F00699; animation: none; }
+  .dash-active-item .info { flex: 1; min-width: 0; }
+  .dash-active-item .info .name { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dash-active-item .info .meta-wrap { margin-top: 2px; overflow: hidden; position: relative; }
+  .dash-active-item .info .meta { display: inline-flex; gap: 4px; white-space: nowrap; }
+
+  .dash-model-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 12px; border-bottom: 1px solid var(--border); }
+  .dash-model-row:last-child { border-bottom: none; }
+  .dash-model-row .mname { flex: 1; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dash-model-row .mtokens { width: 70px; text-align: right; color: var(--text-dim); flex-shrink: 0; font-size: 11px; }
+
+  .dash-empty { color: var(--text-dim); font-size: 12px; padding: 8px 0; }
+
   .section-header {
-    font-size: 10px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.8px; color: var(--success); padding: 8px 12px 4px;
-    user-select: none;
-  }
-  .section-divider {
-    border-top: 1px solid var(--border); margin: 6px 12px 10px;
+    font-size: 12px; color: var(--text-dim); text-transform: uppercase;
+    letter-spacing: 0.6px; margin-bottom: 8px; border-bottom: 1px solid var(--border);
+    padding: 8px 12px 4px; user-select: none;
   }
   .session-list::-webkit-scrollbar { width: 5px; }
   .session-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
   .session-card {
-    padding: 10px 12px; margin-bottom: 2px; border-radius: 6px;
-    cursor: pointer; transition: background .12s; border: 1px solid transparent;
-    position: relative;
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    margin-bottom: 4px; cursor: pointer; transition: background .15s, box-shadow .4s ease-out;
+    position: relative; transform-style: preserve-3d;
   }
-  .session-card:hover { background: var(--surface2); }
+  .session-card:hover {
+    background: var(--surface2);
+    box-shadow: 0 12px 36px rgba(0,0,0,0.4);
+    z-index: 10;
+  }
   .session-card.selected { background: var(--surface2); border-color: var(--accent); }
-  .session-card.active {
-    border-color: rgba(196,148,74,0.3);
-    animation: breathe 2.5s ease-in-out infinite;
+  .session-card .status-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    background: var(--text-dim);
   }
-  @keyframes breathe {
-    0%, 100% { box-shadow: 0 0 0 rgba(196,148,74,0); }
-    50% { box-shadow: 0 0 10px rgba(196,148,74,0.2); }
+  .session-card.active .status-dot { background: #7AFDD6; animation: pulse-dot 1.5s ease-in-out infinite; }
+  .session-card.active .status-dot.busy { background: #FD151B; animation: pulse-dot 1s ease-in-out infinite; }
+  .session-card.active .status-dot.idle { background: #7AFDD6; animation: none; }
+  .session-card.active .status-dot.plugin { background: #F00699; animation: none; }
+  @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .session-card .info { flex: 1; min-width: 0; overflow: hidden; }
+  .session-card .info .name {
+    font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .session-card .active-dot {
-    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: #69db7c; margin-right: 4px; vertical-align: middle;
-    animation: breathe-dot 1.5s ease-in-out infinite;
+  .session-card .info .meta-wrap {
+    margin-top: 2px; overflow: hidden; position: relative;
   }
-  @keyframes breathe-dot {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+  .session-card .info .meta {
+    display: inline-flex; gap: 4px; white-space: nowrap; transition: transform .2s ease-out;
   }
-  .session-card .title {
-    font-size: 13px; font-weight: 500; color: var(--text-bright);
-    margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    padding-right: 60px;
+  .meta-tag {
+    display: inline-block; padding: 0 5px; border-radius: 3px; font-size: 10px;
+    line-height: 16px; flex-shrink: 0;
   }
-  .session-card .meta {
-    font-size: 11px; color: var(--text-dim); display: flex; gap: 10px; flex-wrap: wrap;
-  }
-  .session-card .project-tag {
-    font-size: 10px; background: rgba(196,148,74,0.12); color: var(--accent);
-    padding: 1px 6px; border-radius: 3px; max-width: 180px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
+  .meta-tag.date { background: rgba(15,113,115,0.15); color: #0F7173; }
+  .meta-tag.msgs { background: rgba(218,65,103,0.15); color: #DA4167; }
+  .meta-tag.size { background: rgba(143,179,57,0.15); color: #8FB339; }
+  .meta-tag.project { background: var(--tag-project-bg); color: var(--tag-project-color); }
   .session-card .card-actions {
-    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
-    display: none; gap: 4px;
+    display: none; gap: 4px; flex-shrink: 0;
   }
   .session-card:hover .card-actions { display: flex; }
   .card-btn {
     display: flex; align-items: center; gap: 3px;
     padding: 3px 7px; border: 1px solid var(--border); border-radius: 4px;
     background: var(--surface); color: var(--text-dim); font-size: 11px;
-    cursor: pointer; font-family: var(--font); transition: background .12s, border-color .12s, color .12s, opacity .12s; white-space: nowrap;
+    cursor: pointer; font-family: var(--font); transition: background .12s, border-color .12s, color .12s; white-space: nowrap;
   }
   .card-btn:hover { color: var(--text); border-color: var(--text-dim); }
   .card-btn.danger { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
@@ -869,8 +1090,23 @@ FRONTEND = r"""<!DOCTYPE html>
 
   /* ── Right Panel ── */
   .panel-right {
-    flex: 1; display: flex; flex-direction: column; background: var(--bg); overflow: hidden;
+    flex: 1; min-width: 400px; display: flex; flex-direction: column; background: var(--bg); overflow: hidden; position: relative;
   }
+  .panel-right.too-narrow .detail,
+  .panel-right.too-narrow .empty-state,
+  .panel-right.too-narrow .dashboard-panel { filter: grayscale(1) blur(4px); opacity: 0.3; pointer-events: none; }
+
+  .narrow-alert-wrap {
+    max-height: 0; overflow: hidden; transition: max-height .35s cubic-bezier(.16,1,.3,1);
+  }
+  .narrow-alert-wrap.show { max-height: 90px; }
+  .narrow-alert {
+    display: flex; align-items: center; gap: 10px;
+    margin: 8px 12px 4px; padding: 10px 14px;
+    background: var(--surface2); border: 1px solid var(--accent); border-radius: 6px;
+    font-size: 12px; color: var(--text);
+  }
+  .narrow-alert p { flex: 1; margin: 0; }
   .empty-state {
     flex: 1; display: flex; align-items: center; justify-content: center;
     flex-direction: column; color: var(--text-dim); gap: 8px;
@@ -889,18 +1125,19 @@ FRONTEND = r"""<!DOCTYPE html>
   .detail-top-row {
     display: flex; align-items: flex-start; gap: 12px;
   }
-  .detail-top-row .info-details { flex: 1; min-width: 0; cursor: default; }
+  .detail-top-row .info-details { flex: 1; min-width: 0; cursor: default; padding-top: 2px; }
   .detail-top-row .detail-actions {
-    display: flex; gap: 6px; flex-shrink: 0; padding-top: 2px;
+    display: flex; gap: 6px; flex-shrink: 0;
   }
   .info-summary {
     font-size: 16px; font-weight: 600; color: var(--text-bright);
     cursor: pointer; user-select: none; outline: none;
-    word-break: break-word; white-space: normal;
+    white-space: nowrap; overflow-x: auto;
     margin-bottom: 6px;
     display: flex; align-items: center; gap: 8px;
     line-height: 26px;
   }
+  .info-summary::-webkit-scrollbar { display: none; }
   .info-summary::-webkit-details-marker { display: none; }
   .info-toggle-icon {
     display: inline-flex; align-items: center; justify-content: center;
@@ -939,11 +1176,6 @@ FRONTEND = r"""<!DOCTYPE html>
     background: rgba(105,219,124,0.08); color: var(--success); border-color: transparent;
   }
   .btn-restore:hover { background: var(--success); color: #000; }
-  .btn-confirming {
-    animation: pulse .6s infinite alternate;
-  }
-  @keyframes pulse { from { opacity: 0.75; } to { opacity: 1; } }
-
   .conversation-preview {
     flex: 1; overflow-y: auto; padding: 12px 20px;
   }
@@ -1054,19 +1286,38 @@ FRONTEND = r"""<!DOCTYPE html>
 <body>
 
 <header>
-  <h1>▸ <span id="app-title">S.T.O.A.</span></h1>
+  <div style="display:flex;align-items:center;gap:12px">
+    <button type="button" class="lang-btn" id="collapse-btn" onclick="togglePanel()" title="Toggle sidebar">&#9776;</button>
+    <h1><span id="app-title">S.T.O.A.</span></h1>
+  </div>
   <div class="header-right">
     <button type="button" class="lang-btn" onclick="newSession()" title="New chat" style="border-color:var(--accent);color:var(--accent)">+ <span data-i18n="newChat">New Chat</span></button>
-    <button type="button" class="lang-btn" id="refresh-btn" onclick="refreshData()" title="Refresh">&#8635; <span data-i18n="refresh">Refresh</span></button>
-    <div class="header-stats"><span id="session-count">0</span> <span id="sessions-label">sessions</span></div>
-    <button type="button" class="lang-btn" id="theme-btn" onclick="toggleTheme()" title="Theme">&#9788;</button>
-    <button type="button" class="lang-btn" id="lang-btn" onclick="toggleLang()">En</button>
+    <button type="button" class="lang-btn" id="refresh-btn" onclick="hardReload()" title="Refresh">&#8635; <span data-i18n="refresh">Refresh</span></button>
+    <div class="settings-wrap" id="settings-wrap">
+      <button type="button" class="lang-btn" onclick="toggleSettings()"><span data-i18n="settingsBtn">Settings</span></button>
+      <div class="settings-menu" id="settings-menu">
+        <button type="button" onclick="toggleTheme();toggleSettings()"><span data-i18n="themeLabel">Theme</span></button>
+        <button type="button" onclick="toggleLang();toggleSettings()"><span data-i18n="langLabel">Language</span></button>
+        <button type="button" onclick="restartServer();toggleSettings()"><span data-i18n="restartBtn">Restart S.T.O.A.</span></button>
+        <div class="settings-sep"></div>
+        <div class="settings-info"><div>Server up since</div><div id="server-started-at">—</div></div>
+      </div>
+    </div>
   </div>
 </header>
 
 <div class="main">
   <!-- Left Panel -->
   <div class="panel-left">
+    <div class="panel-left-inner">
+    <div class="narrow-alert-wrap" id="narrow-alert-wrap">
+      <div class="narrow-alert">
+        <div>
+          <p data-i18n="narrowHint1">预览窗过窄</p>
+          <p data-i18n="narrowHint2">请调整浏览器宽度，或折叠左侧栏</p>
+        </div>
+      </div>
+    </div>
     <div class="search-bar">
       <input type="text" id="search" name="search" autocomplete="off" data-i18n-placeholder="searchPlaceholder"
              oninput="onSearchInput()" autofocus>
@@ -1075,7 +1326,11 @@ FRONTEND = r"""<!DOCTYPE html>
     </div>
     <div class="search-result-info" id="search-result-info"></div>
     <div class="tab-bar">
-      <button type="button" class="active" data-tab="list" onclick="switchTab('list')">
+      <div class="tab-indicator" id="tab-indicator"></div>
+      <button type="button" class="active" data-tab="dashboard" onclick="switchTab('dashboard')">
+        <span data-i18n="dashboardTab">Dashboard</span>
+      </button>
+      <button type="button" data-tab="list" onclick="switchTab('list')">
         <span data-i18n="listTab">Sessions</span>
       </button>
       <button type="button" data-tab="trash" onclick="switchTab('trash')">
@@ -1083,7 +1338,20 @@ FRONTEND = r"""<!DOCTYPE html>
         <span class="badge" id="trash-badge" style="display:none">0</span>
       </button>
     </div>
-    <div class="session-list" id="session-list"></div>
+    <div class="tab-strip-wrapper">
+      <div class="tab-strip" id="tab-strip">
+        <div class="tab-panel" id="tab-panel-dashboard">
+          <div class="dashboard-panel" id="dashboard-panel"></div>
+        </div>
+        <div class="tab-panel" id="tab-panel-list">
+          <div class="session-list" id="session-list"></div>
+        </div>
+        <div class="tab-panel" id="tab-panel-trash">
+          <div class="session-list" id="trash-list"></div>
+        </div>
+      </div>
+    </div>
+    </div>
   </div>
 
   <!-- Right Panel -->
@@ -1114,7 +1382,7 @@ FRONTEND = r"""<!DOCTYPE html>
 //  i18n
 // ═══════════════════════════════════════════════════════════════════
 const I18N = """ + json.dumps(I18N, ensure_ascii=False) + r""";
-let LANG = localStorage.getItem('csm-lang') || 'zh';
+let LANG = (function(){ try { return localStorage.getItem('csm-lang'); } catch(e) {} return null; })() || 'zh';
 
 function t(key) {
   return (I18N[LANG] && I18N[LANG][key]) || I18N['en'][key] || key;
@@ -1131,29 +1399,59 @@ function applyLang() {
   document.querySelectorAll('[data-i18n-title]').forEach(el => {
     el.title = t(el.getAttribute('data-i18n-title'));
   });
-  document.getElementById('lang-btn').textContent = t('language');
-  document.getElementById('sessions-label').textContent = t('sessions');
   document.getElementById('app-title').textContent = t('appTitle');
   // Update current detail view if any
   if (currentDetailType === 'session') updateSessionDetail();
   else if (currentDetailType === 'trash') updateTrashDetail();
   else updateEmptyState();
+  // Re-render dashboard if active (it uses t() for dynamic i18n)
+  if (currentTab === 'dashboard') renderDashboard();
 }
 
-let THEME = localStorage.getItem('csm-theme') || 'warm';
+function togglePanel() {
+  document.querySelector('.panel-left')?.classList.toggle('collapsed');
+  setTimeout(() => { checkNarrow(); moveTabIndicator(currentTab); }, 350);
+}
+
+// Detect when right panel is too narrow
+function checkNarrow() {
+  const pr = document.getElementById('panel-right');
+  const alert = document.getElementById('narrow-alert-wrap');
+  const pl = document.querySelector('.panel-left');
+  if (!pr || !alert) return;
+  const collapsed = pl && pl.classList.contains('collapsed');
+  const panelWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--panel-left-width')) || 360;
+  const leftW = collapsed ? 0 : panelWidth;
+  const available = window.innerWidth - leftW;
+  const tooNarrow = available < 400;
+  pr.classList.toggle('too-narrow', tooNarrow);
+  alert.classList.toggle('show', tooNarrow);
+}
+window.addEventListener('resize', () => { checkNarrow(); moveTabIndicator(currentTab); });
+
+let THEME = (function(){ try { return localStorage.getItem('csm-theme'); } catch(e) {} return null; })() || 'warm';
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', THEME);
-  document.getElementById('theme-btn').textContent = THEME === 'warm' ? t('themeCool') : t('themeWarm');
 }
 function toggleTheme() {
   THEME = THEME === 'warm' ? 'cool' : 'warm';
-  localStorage.setItem('csm-theme', THEME);
+  try { localStorage.setItem('csm-theme', THEME); } catch(e) {}
   applyTheme();
 }
 
+function toggleSettings() {
+  document.getElementById('settings-menu').classList.toggle('show');
+}
+document.addEventListener('click', e => {
+  const wrap = document.getElementById('settings-wrap');
+  if (wrap && !wrap.contains(e.target)) {
+    document.getElementById('settings-menu').classList.remove('show');
+  }
+});
+
 function toggleLang() {
   LANG = LANG === 'zh' ? 'en' : 'zh';
-  localStorage.setItem('csm-lang', LANG);
+  try { localStorage.setItem('csm-lang', LANG); } catch(e) {}
   applyTheme();  // theme button text uses t()
   // Update sort buttons
   document.querySelectorAll('#sort-bar button').forEach(b => {
@@ -1171,9 +1469,8 @@ function toggleLang() {
 let sessions = [];
 let trashItems = [];
 let selectedId = null;
-let selectedType = 'session'; // 'session' | 'trash'
 let sortBy = 'time';
-let currentTab = 'list';
+let currentTab = 'dashboard';
 let contentMatchIds = null; // non-null when content search is active → filter by these IDs
 let modalCallback = null;
 let currentDetailType = null;
@@ -1189,42 +1486,50 @@ async function api(path, method = 'GET') {
 // ═══════════════════════════════════════════════════════════════════
 //  Init
 // ═══════════════════════════════════════════════════════════════════
+async function loadServerTime() {
+  try {
+    const s = await api('/api/status');
+    document.getElementById('server-started-at').textContent = s.started_at;
+  } catch(e) {}
+}
+
+function resolvePlaceholder(newSessions) {
+  if (!window._placeholder) return;
+  const prevIds = window._prevActiveIds || new Set();
+  const realMatch = newSessions.find(s =>
+    s.active && !prevIds.has(s.id) && !s._placeholder
+  );
+  if (realMatch) {
+    window._placeholder = null;
+    window._prevActiveIds = null;
+    if (selectedId === '__placeholder__') selectedId = realMatch.id;
+  } else {
+    newSessions.unshift(window._placeholder);
+  }
+}
+
 async function init() {
   applyTheme();
   sessions = await api('/api/sessions');
   trashItems = await api('/api/trash');
-  document.getElementById('session-count').textContent = sessions.length;
   renderList();
+  loadDashboard();
   updateTrashBadge();
+  loadServerTime();
   applyLang();
+  moveTabIndicator('dashboard');
 
-  // Auto-refresh every 2s: session list + current detail view
+  // Auto-refresh every 2s
   setInterval(async () => {
     const newSessions = await api('/api/sessions');
     const newTrash = await api('/api/trash');
-    // Preserve placeholder until real session replaces it
-    if (window._placeholder) {
-      // Match by "newly active" — the session that became active after +newSession
-      const prevIds = window._prevActiveIds || new Set();
-      const realMatch = newSessions.find(s =>
-        s.active && !prevIds.has(s.id) && !s._placeholder
-      );
-      if (realMatch) {
-        window._placeholder = null;
-        window._prevActiveIds = null;
-        if (selectedId === '__placeholder__') selectedId = realMatch.id;
-      } else {
-        newSessions.unshift(window._placeholder);
-      }
-    }
+    resolvePlaceholder(newSessions);
     const changed = JSON.stringify(newSessions) !== JSON.stringify(sessions) ||
                     JSON.stringify(newTrash) !== JSON.stringify(trashItems);
     if (changed) {
       sessions = newSessions;
       trashItems = newTrash;
-      document.getElementById('session-count').textContent = sessions.length;
       updateTrashBadge();
-      // Refresh content search results if active, so new matching sessions appear
       if (contentMatchIds !== null) {
         const q = (document.getElementById('search')?.value || '').trim();
         if (q) {
@@ -1234,59 +1539,173 @@ async function init() {
       }
       renderList();
     }
-    // Also refresh current detail panel if one is open (append-only, no flash)
     if (selectedId && currentTab === 'list') {
       refreshPreview(selectedId);
     } else if (selectedId && currentTab === 'trash') {
       selectTrashItem(selectedId);
+    } else if (currentTab === 'dashboard') {
+      loadDashboard();
     }
   }, 2000);
 }
 init();
+setTimeout(checkNarrow, 500);
 
 // ═══════════════════════════════════════════════════════════════════
 //  Tab switching
 // ═══════════════════════════════════════════════════════════════════
-function switchTab(tab) {
+// ═══════════════════════════════════════════════════════════════════
+//  Dashboard
+// ═══════════════════════════════════════════════════════════════════
+let dashboardData = null;
+
+async function loadDashboard() {
+  try { dashboardData = await api('/api/dashboard'); }
+  catch { dashboardData = null; }
+  renderDashboard();
+}
+
+function renderDashboard() {
+  const panel = document.getElementById('dashboard-panel');
+  if (!panel) return;
+  const d = dashboardData;
+  if (!d || !d.overview) { panel.innerHTML = `<p style="color:var(--text-dim);padding:20px">${t('loading')}</p>`; return; }
+
+  const o = d.overview;
+  const fmtTokens = (n) => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);
+  const fmtUptime = (s) => {
+    if (s < 60) return s+'s';
+    if (s < 3600) return Math.floor(s/60)+'m';
+    return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
+  };
+
+  let html = '';
+
+  // ── Overview Cards ──
+  html += '<div class="dash-cards">';
+  html += `<div class="dash-card"><div class="lbl">${t('totalSessions')}</div><div class="num">${o.total_sessions}</div></div>`;
+  html += `<div class="dash-card"><div class="lbl">${t('activeSessions')}</div><div class="num">${o.active_sessions}</div></div>`;
+  html += `<div class="dash-card"><div class="lbl">${t('totalMessages')}</div><div class="num">${o.total_messages.toLocaleString()}</div></div>`;
+  html += `<div class="dash-card"><div class="lbl">${t('totalTokens')}</div><div class="num">${fmtTokens(o.total_tokens)}</div></div>`;
+  html += '</div>';
+
+  // ── Model Usage ──
+  html += '<div class="dash-section"><h3>'+t('modelUsage')+'</h3>';
+  if (d.model_stats.length === 0) {
+    html += `<div class="dash-empty">${t('noData')}</div>`;
+  } else {
+    for (const m of d.model_stats) {
+      html += `<div class="dash-model-row">`;
+      html += `<span class="mname">${esc(m.model)}</span>`;
+      html += `<span class="mtokens">${fmtTokens(m.tokens)}</span>`;
+      html += `</div>`;
+    }
+  }
+  html += '</div>';
+
+  // ── Active Sessions Monitor ──
+  html += '<div class="dash-section"><h3>'+t('activeSessions')+'</h3>';
+  if (d.active_list.length === 0) {
+    html += `<div class="dash-empty">${t('noData')}</div>`;
+  } else {
+    for (const a of d.active_list) {
+      const s = a.status;
+      const dotClass = s === 'busy' ? 'busy' : s === 'plugin' ? 'plugin' : 'idle';
+      const statusLabel = s === 'busy' ? t('busyStatus') : s === 'plugin' ? t('pluginStatus') : t('idleStatus');
+      const statusColor = s === 'busy' ? 'background:rgba(253,21,27,0.15);color:#FD151B'
+        : s === 'plugin' ? 'background:rgba(240,0,105,0.15);color:#F00699'
+        : 'background:rgba(122,253,214,0.15);color:#7AFDD6';
+      html += renderSessionCard({
+        cardClass: 'dash-active-item',
+        dotClass: dotClass,
+        title: a.title,
+        dataId: a.id,
+        onClick: `switchTab('list',true);selectedId='${a.id}';currentDetailType='session';reloadData().then(()=>{renderList();selectSession('${a.id}');})`,
+        metaTags: [
+          { cls: 'project', text: a.model },
+          { style: statusColor, text: statusLabel },
+          { cls: 'date', text: t('uptime') + ': ' + fmtUptime(a.uptime_seconds) },
+        ]
+      });
+    }
+  }
+  html += '</div>';
+
+  // ── Recent Activity ──
+  html += '<div class="dash-section"><h3>'+t('recentActivity')+'</h3>';
+  if (d.recent_sessions.length === 0) {
+    html += `<div class="dash-empty">${t('noData')}</div>`;
+  } else {
+    for (const r of d.recent_sessions) {
+      const ractive = d.active_list.find(a => a.id === r.id);
+      const rdotClass = ractive ? ractive.status : '';
+      const rdotStyle = ractive ? '' : 'background:var(--text-dim)';
+      html += renderSessionCard({
+        cardClass: 'dash-active-item',
+        dotClass: rdotClass,
+        dotStyle: rdotStyle,
+        title: r.title,
+        dataId: r.id,
+        onClick: `switchTab('list',true);selectedId='${r.id}';currentDetailType='session';reloadData().then(()=>{renderList();selectSession('${r.id}');})`,
+        metaTags: [
+          { cls: 'project', text: r.model },
+          { cls: 'date', text: r.last_time },
+        ]
+      });
+    }
+  }
+  html += '</div>';
+
+  panel.innerHTML = html;
+}
+
+const TAB_ORDER = { dashboard: 0, list: 1, trash: 2 };
+
+function moveTabIndicator(tab) {
+  const btn = document.querySelector(`[data-tab="${tab}"]`);
+  const ind = document.getElementById('tab-indicator');
+  if (!btn || !ind) return;
+  ind.style.left = btn.offsetLeft + 'px';
+  ind.style.width = btn.offsetWidth + 'px';
+}
+
+function switchTab(tab, keepSelection) {
+  if (tab === currentTab) return;
   currentTab = tab;
-  selectedId = null;
-  selectedType = 'session';
+  if (!keepSelection) selectedId = null;
   document.querySelectorAll('.tab-bar button').forEach(b => b.classList.remove('active'));
   document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
+  moveTabIndicator(tab);
 
+  const strip = document.getElementById('tab-strip');
+  if (strip) {
+    strip.style.transform = `translateX(-${TAB_ORDER[tab] * 100}%)`;
+  }
 
-  // Reload data
-  reloadData().then(() => {
-    renderList();
+  if (tab === 'dashboard') {
+    loadDashboard();
     updateEmptyState();
-  });
+  } else {
+    reloadData().then(() => { renderList(); if (!keepSelection) updateEmptyState(); });
+  }
+}
+
+function hardReload() {
+  const url = new URL(window.location.href);
+  url.searchParams.set('_', Date.now());
+  window.location.href = url.toString();
+}
+
+async function restartServer() {
+  try { await api('/api/restart', 'POST'); } catch(e) { /* expected */ }
+  setTimeout(() => { hardReload(); }, 1500);
 }
 
 async function refreshData() {
   sessions = await api('/api/sessions');
   trashItems = await api('/api/trash');
+  resolvePlaceholder(sessions);
 
-  // Keep placeholder if it exists and no real new session has replaced it yet
-  if (window._placeholder) {
-    // Match by "newly active" — the session that became active after +newSession
-    const prevIds = window._prevActiveIds || new Set();
-    const realMatch = sessions.find(s =>
-      s.active && !prevIds.has(s.id) && !s._placeholder
-    );
-    if (realMatch) {
-      // Real new session found — remove placeholder, select real one
-      window._placeholder = null;
-      window._prevActiveIds = null;
-      if (selectedId === '__placeholder__') selectedId = realMatch.id;
-    } else {
-      // Keep placeholder (session hasn't appeared in list_all yet)
-      sessions.unshift(window._placeholder);
-    }
-  }
-
-  if (currentTab === 'list') {
-    document.getElementById('session-count').textContent = sessions.length;
-  }
   updateTrashBadge();
   renderList();
 
@@ -1300,8 +1719,7 @@ async function refreshData() {
 async function reloadData() {
   if (currentTab === 'list') {
     sessions = await api('/api/sessions');
-    document.getElementById('session-count').textContent = sessions.length;
-  } else {
+  } else if (currentTab === 'trash') {
     trashItems = await api('/api/trash');
   }
   updateTrashBadge();
@@ -1388,14 +1806,39 @@ async function contentSearch() {
   if (list) { list.style.transition = 'opacity .1s'; list.style.opacity = '0.5'; requestAnimationFrame(() => { list.style.opacity = '1'; }); }
 }
 
+// Shared card renderer — used by session list, dashboard active/recent, and trash.
+// All four contexts share the same DOM structure; only data fields and actions differ.
+function renderSessionCard(opts) {
+  // opts: { cardClass, extraClasses, dotClass, dotStyle, title, dataId, onClick, metaTags, actionsHtml }
+  const dotHtml = opts.dotClass !== undefined
+    ? `<div class="status-dot${opts.dotClass ? ' ' + opts.dotClass : ''}"${opts.dotStyle ? ` style="${opts.dotStyle}"` : ''}></div>`
+    : '';
+  const tagsHtml = (opts.metaTags || []).map(t => {
+    const cls = t.cls ? `meta-tag ${t.cls}` : 'meta-tag';
+    const style = t.style ? ` style="${t.style}"` : '';
+    return `<span class="${cls}"${style}>${esc(t.text)}</span>`;
+  }).join('');
+  const actionsHtml = opts.actionsHtml ? `<div class="card-actions">${opts.actionsHtml}</div>` : '';
+  const cls = opts.cardClass + (opts.extraClasses || '');
+  return `<div class="${cls}" data-id="${opts.dataId}" onclick="${opts.onClick}">
+    ${dotHtml}
+    <div class="info">
+      <div class="name">${esc(opts.title)}</div>
+      <div class="meta-wrap"><div class="meta">${tagsHtml}</div></div>
+    </div>
+    ${actionsHtml}
+  </div>`;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Render List
 // ═══════════════════════════════════════════════════════════════════
 function renderList() {
   const query = (document.getElementById('search')?.value || '').toLowerCase();
-  const container = document.getElementById('session-list');
 
-  if (currentTab === 'list') {
+  // ── Session list panel ──
+  const listContainer = document.getElementById('session-list');
+  if (listContainer) {
     let filtered = sessions.filter(s => {
       if (contentMatchIds !== null) return contentMatchIds.includes(s.id);
       if (!query) return true;
@@ -1407,35 +1850,32 @@ function renderList() {
     });
 
     const actives = filtered.filter(s => s.active);
-
-    // Sort active sessions by mtime (latest first)
     actives.sort((a, b) => b.mtime - a.mtime);
 
-    // Sort ALL sessions by user's choice for bottom section
     const sorted = [...filtered];
     if (sortBy === 'time') sorted.sort((a, b) => b.mtime - a.mtime);
     else if (sortBy === 'size') sorted.sort((a, b) => b.size_bytes - a.size_bytes);
     else if (sortBy === 'messages') sorted.sort((a, b) => b.messages - a.messages);
 
-    const renderCard = (s) => {
-      const sel = s.id === selectedId ? ' selected' : '';
-      const act = s.active ? ' active' : '';
-      const dot = s.active ? '<span class="active-dot"></span>' : '';
-      return `<div class="session-card${sel}${act}" data-id="${s.id}" onclick="selectSession('${s.id}')">
-        <div class="title">${dot}${esc(s.title)}</div>
-        <div class="meta">
-          <span>${s.date}</span><span>${s.messages} msgs</span><span>${s.size}</span>
-          <span class="project-tag">${esc(s.project)}</span>
-        </div>
-        <div class="card-actions">
-          <button type="button" class="card-btn danger" onclick="event.stopPropagation(); ${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
-        </div>
-      </div>`;
-    };
+    const renderCard = (s) => renderSessionCard({
+      cardClass: 'session-card',
+      extraClasses: (s.id === selectedId ? ' selected' : '') + (s.active ? ' active' : ''),
+      dotClass: s.status || '',
+      title: s.title,
+      dataId: s.id,
+      onClick: `selectSession('${s.id}')`,
+      metaTags: [
+        { cls: 'date', text: s.date },
+        { cls: 'msgs', text: s.messages + ' msgs' },
+        { cls: 'size', text: s.size },
+        { cls: 'project', text: s.project },
+      ],
+      actionsHtml: `<button type="button" class="card-btn danger" onclick="event.stopPropagation(); ${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>`
+    });
 
     let html = '';
     if (actives.length > 0) {
-      html += `<div class="section-header">🟢 ${t('runningSessions')}</div>`;
+      html += `<div class="section-header">${t('activeSessions')}</div>`;
       html += actives.map(renderCard).join('');
     }
     html += `<div class="sort-bar" id="sort-bar" style="padding:4px 12px 8px">
@@ -1445,10 +1885,12 @@ function renderList() {
     </div>`;
     html += `<div class="section-header">${t('allSessions')}</div>`;
     html += sorted.map(renderCard).join('');
-    container.innerHTML = html;
+    listContainer.innerHTML = html;
+  }
 
-  } else {
-    // Trash tab
+  // ── Trash panel ──
+  const trashContainer = document.getElementById('trash-list');
+  if (trashContainer) {
     let filtered = trashItems.filter(item => {
       if (!query) return true;
       return (item.title || '').toLowerCase().includes(query)
@@ -1456,22 +1898,22 @@ function renderList() {
     });
 
     if (filtered.length === 0) {
-      container.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text-dim);font-size:13px">${t('trashEmpty')}</div>`;
+      trashContainer.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text-dim);font-size:13px">${t('trashEmpty')}</div>`;
     } else {
-      container.innerHTML = filtered.map(item => {
-        const sel = item.id === selectedId ? ' selected' : '';
-        return `<div class="session-card${sel}" data-id="${item.id}" onclick="selectTrashItem('${item.id}')">
-          <div class="title">${esc(item.title)}</div>
-          <div class="meta">
-            <span>${item.date}</span><span>${item.messages} msgs</span><span>${item.size}</span>
-            <span style="color:var(--warn)">${t('deletedAt')}: ${item.deleted_at}</span>
-          </div>
-          <div class="card-actions">
-            <button type="button" class="card-btn restore" onclick="event.stopPropagation(); askRestore('${item.id}')">&#8634; ${t('restore')}</button>
-            <button type="button" class="card-btn danger" onclick="event.stopPropagation(); askPermDelete('${item.id}')">&#x2715; ${t('permDelete')}</button>
-          </div>
-        </div>`;
-      }).join('');
+      trashContainer.innerHTML = filtered.map(item => renderSessionCard({
+        cardClass: 'session-card',
+        extraClasses: item.id === selectedId ? ' selected' : '',
+        title: item.title,
+        dataId: item.id,
+        onClick: `selectTrashItem('${item.id}')`,
+        metaTags: [
+          { cls: 'date', text: item.date },
+          { cls: 'msgs', text: item.messages + ' msgs' },
+          { cls: 'size', text: item.size },
+          { style: 'background:rgba(240,160,48,0.15);color:#f0a030', text: t('deletedAt') + ': ' + item.deleted_at },
+        ],
+        actionsHtml: `<button type="button" class="card-btn restore" onclick="event.stopPropagation(); askRestore('${item.id}')">&#8634; ${t('restore')}</button><button type="button" class="card-btn danger" onclick="event.stopPropagation(); askPermDelete('${item.id}')">&#x2715; ${t('permDelete')}</button>`
+      })).join('');
     }
   }
 }
@@ -1545,7 +1987,13 @@ function renderMarkdown(str, query) {
       return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
     });
 
-  // Apply markdown rules to non-code text
+  // Apply search highlight BEFORE markdown on escaped text
+  if (query) {
+    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    html = html.replace(new RegExp(escapedQuery, 'gi'), '<mark class="search-highlight">$&</mark>');
+  }
+
+  // Apply markdown rules to text (won't touch <mark> tags since they use angle brackets)
   html = html
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/__(.+?)__/g, '<strong>$1</strong>')
@@ -1563,12 +2011,6 @@ function renderMarkdown(str, query) {
   codeBlocks.forEach((block, i) => {
     html = html.replace(`%%CODEBLOCK_${i}%%`, block);
   });
-
-  // Apply search highlight AFTER markdown to avoid tag corruption
-  if (query) {
-    const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    html = html.replace(new RegExp(escapedQuery, 'gi'), '<mark class="search-highlight">$&</mark>');
-  }
 
   return html;
 }
@@ -1614,7 +2056,6 @@ function navigateMatch(dir) {
 // ═══════════════════════════════════════════════════════════════════
 async function selectSession(id) {
   selectedId = id;
-  selectedType = 'session';
   currentDetailType = 'session';
   renderList();
 
@@ -1633,8 +2074,8 @@ async function selectSession(id) {
             <div class="info-grid">
             <span class="label">${t('sessionId')}</span><span class="value">${s.id}</span>
             <span class="label">${t('project')}</span><span class="value">${esc(s.project)}</span>
-            <span class="label">${t('branch')}</span><span class="value">${s.branch || '—'}</span>
-            <span class="label">${t('model')}</span><span class="value">${s.model || '—'}</span>
+            <span class="label">${t('branch')}</span><span class="value">${esc(s.branch) || '—'}</span>
+            <span class="label">${t('model')}</span><span class="value">${esc(s.model) || '—'}</span>
             <span class="label">${t('messages')}</span><span class="value">${s.messages} (${s.turns} ${t('turns')})</span>
             <span class="label">${t('tokens')}</span><span class="value">${(s.tokens || 0).toLocaleString()}</span>
             <span class="label">${t('lastActive')}</span><span class="value">${s.last_time || s.date}</span>
@@ -1649,7 +2090,7 @@ async function selectSession(id) {
           </div>
         </div>
       </div>
-      ${searchQuery ? `<div class="match-nav" id="match-nav"><span id="match-counter"></span><button type="button" onclick="navigateMatch(-1)" title="上一个">▲</button><button type="button" onclick="navigateMatch(1)" title="下一个">▼</button></div>` : ''}
+      ${searchQuery ? `<div class="match-nav" id="match-nav"><span id="match-counter"></span><button type="button" onclick="navigateMatch(-1)" data-i18n-title="prevMatch">▲</button><button type="button" onclick="navigateMatch(1)" data-i18n-title="nextMatch">▼</button></div>` : ''}
       <div class="conversation-preview" id="conversation-preview" onscroll="updateScrollButton()">${t('loading')}</div>
       <button type="button" class="scroll-to-bottom" id="scroll-to-bottom-btn" onclick="scrollToLatest()">↓ ${t('scrollToBottom')}</button>
     </div>
@@ -1686,7 +2127,7 @@ async function selectSession(id) {
       updateMatchCounter();
       navigateMatch(1); // jump to first match
     } else {
-      preview.scrollTop = preview.scrollHeight;
+      quickScrollToBottom(preview, 200);
     }
   } catch (e) {
     document.getElementById('conversation-preview').innerHTML = `<p style="color:var(--danger);padding:20px">${t('loadFailed')}</p>`;
@@ -1735,11 +2176,27 @@ function updateScrollButton() {
   }
 }
 
+function quickScrollToBottom(container, duration) {
+  // Cancel any in-flight scroll animation on this container
+  if (container._scrollRafId) { cancelAnimationFrame(container._scrollRafId); container._scrollRafId = null; }
+  const start = container.scrollTop;
+  const end = container.scrollHeight - container.clientHeight;
+  const startTime = performance.now();
+  function step(now) {
+    const elapsed = now - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const eased = 1 - Math.pow(1 - progress, 3);
+    container.scrollTop = start + (end - start) * eased;
+    if (progress < 1) container._scrollRafId = requestAnimationFrame(step);
+  }
+  container._scrollRafId = requestAnimationFrame(step);
+}
+
 function scrollToLatest() {
   const container = document.getElementById('conversation-preview');
   if (container) {
-    container.scrollTop = container.scrollHeight;
-    updateScrollButton();
+    container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    container.addEventListener('scrollend', updateScrollButton, { once: true });
   }
 }
 
@@ -1753,7 +2210,6 @@ function updateSessionDetail() {
 // ═══════════════════════════════════════════════════════════════════
 function selectTrashItem(id) {
   selectedId = id;
-  selectedType = 'trash';
   currentDetailType = 'trash';
   renderList();
 
@@ -1827,10 +2283,9 @@ async function newSession() {
         _placeholder: true,
       };
       sessions.unshift(window._placeholder);
-      document.getElementById('session-count').textContent = sessions.length;
-      renderList();
+            renderList(); loadDashboard();
     } else {
-      toast(res.message || 'Failed', 'error');
+      toast(res.message || t('failed'), 'error');
     }
   } catch (e) {
     toast(e.message, 'error');
@@ -1854,13 +2309,12 @@ async function resumeSession(id) {
       setTimeout(async () => {
         sessions = await api('/api/sessions');
         trashItems = await api('/api/trash');
-        document.getElementById('session-count').textContent = sessions.length;
-        updateTrashBadge();
-        renderList();
+                updateTrashBadge();
+        renderList(); loadDashboard();
         if (selectedId) selectSession(selectedId);
       }, 2000);
     } else {
-      toast(res.message || 'Failed', 'error');
+      toast(res.message || t('failed'), 'error');
     }
   } catch (e) {
     toast(e.message, 'error');
@@ -1878,9 +2332,12 @@ function askRestartSession(id) {
     try {
       const res = await api(`/api/sessions/${id}/restart`, 'POST');
       if (res.success) {
+        sessions = await api('/api/sessions');
+        renderList(); loadDashboard();
+        if (selectedId === id) selectSession(id);
         toast(t('restarted'), 'success');
       } else {
-        toast(res.message || 'Failed', 'error');
+        toast(res.message || t('failed'), 'error');
       }
     } catch (e) {
       toast(e.message, 'error');
@@ -1897,9 +2354,12 @@ function askStopSession(id) {
     try {
       const res = await api(`/api/sessions/${id}/stop`, 'POST');
       if (res.success) {
+        sessions = await api('/api/sessions');
+        renderList(); loadDashboard();
+        if (selectedId === id) selectSession(id);
         toast(t('stopped'), 'success');
       } else {
-        toast(res.message || 'Failed', 'error');
+        toast(res.message || t('failed'), 'error');
       }
     } catch (e) {
       toast(e.message, 'error');
@@ -1923,12 +2383,11 @@ function askDeleteSession(id) {
         sessions = sessions.filter(s => s.id !== id);
         trashItems = await api('/api/trash');
         if (selectedId === id) { selectedId = null; updateEmptyState(); }
-        document.getElementById('session-count').textContent = sessions.length;
-        updateTrashBadge();
-        renderList();
+                updateTrashBadge();
+        renderList(); loadDashboard();
         toast(t('deleted'), 'success');
       } else {
-        toast(res.message || 'Failed', 'error');
+        toast(res.message || t('failed'), 'error');
       }
     } catch (e) {
       toast(e.message, 'error');
@@ -1951,12 +2410,11 @@ function askRestore(id) {
         sessions = await api('/api/sessions');
         trashItems = await api('/api/trash');
         if (selectedId === id) { selectedId = null; updateEmptyState(); }
-        document.getElementById('session-count').textContent = sessions.length;
-        updateTrashBadge();
-        renderList();
+                updateTrashBadge();
+        renderList(); loadDashboard();
         toast(t('restored'), 'success');
       } else {
-        toast(res.message || 'Failed', 'error');
+        toast(res.message || t('failed'), 'error');
       }
     } catch (e) {
       toast(e.message, 'error');
@@ -1981,10 +2439,10 @@ function askPermDelete(id) {
         trashItems = trashItems.filter(t => t.id !== id);
         if (selectedId === id) { selectedId = null; updateEmptyState(); }
         updateTrashBadge();
-        renderList();
+        renderList(); loadDashboard();
         toast(t('permDeleted'), 'success');
       } else {
-        toast(res.message || 'Failed', 'error');
+        toast(res.message || t('failed'), 'error');
       }
     } catch (e) {
       toast(e.message, 'error');
@@ -2042,6 +2500,43 @@ document.addEventListener('keydown', e => {
     refreshData();
   }
 });
+
+// macOS Dock-style meta scroll + Steam card tilt
+function bindCardTilt(container) {
+  if (!container) return;
+  container.addEventListener('mousemove', e => {
+    const card = e.target.closest('.session-card, .dash-active-item');
+    if (!card) return;
+    // Meta scroll
+    const meta = card.querySelector('.meta');
+    const wrap = card.querySelector('.meta-wrap');
+    if (meta && wrap) {
+      const overflow = meta.scrollWidth - wrap.clientWidth;
+      if (overflow > 0) {
+        const rect = card.getBoundingClientRect();
+        const rawPct = (e.clientX - rect.left) / rect.width;
+        const pct = rawPct < 0.30 ? 0 : (rawPct - 0.30) / 0.70;
+        meta.style.transform = `translateX(${-(overflow + 40) * pct}px)`;
+      }
+    }
+    // Card tilt — follows cursor like a floating card
+    const r = card.getBoundingClientRect();
+    const cx = (e.clientX - r.left) / r.width - 0.5;
+    const cy = (e.clientY - r.top) / r.height - 0.5;
+    card.style.transform = `perspective(400px) rotateY(${cx * 12}deg) rotateX(${-cy * 8}deg) scale(1.04)`;
+  });
+  container.addEventListener('mouseout', e => {
+    const card = e.target.closest('.session-card, .dash-active-item');
+    if (!card) return;
+    if (card.contains(e.relatedTarget)) return;
+    const meta = card.querySelector('.meta');
+    if (meta) meta.style.transform = '';
+    card.style.transform = '';
+  });
+}
+bindCardTilt(document.getElementById('session-list'));
+bindCardTilt(document.getElementById('trash-list'));
+bindCardTilt(document.getElementById('dashboard-panel'));
 </script>
 </body>
 </html>"""
@@ -2067,6 +2562,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._serve_html()
         elif path == "/api/sessions":
             return self._json(SessionManager.list_all())
+        elif path == "/api/dashboard":
+            return self._json(SessionManager.get_dashboard())
         elif path.startswith("/api/sessions/") and path.endswith("/preview"):
             # 获取会话预览内容，支持增量刷新（after_line）和搜索（q）
             session_id = path.rsplit("/", 2)[-2]
@@ -2085,6 +2582,8 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._search_content(query)
         elif path == "/api/trash":
             return self._json(SessionManager.list_trash())
+        elif path == "/api/status":
+            return self._json({"status": "ok", "started_at": SERVER_STARTED_AT})
         else:
             return self._error(404, "Not found")
 
@@ -2132,12 +2631,13 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/new-session":
             # 新建会话：打开终端运行 claude
             return self._new_session()
+        elif path == "/api/restart":
+            return self._restart_server()
         else:
             return self._error(404, "Not found")
 
     def do_OPTIONS(self):
         """CORS 预检请求处理"""
-        self._cors()
         self.send_response(200)
         self.end_headers()
 
@@ -2158,7 +2658,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
-        self._cors()
         self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
@@ -2166,7 +2665,6 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         """返回错误响应"""
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
-        self._cors()
         self.end_headers()
         self.wfile.write(json.dumps({"error": msg}).encode("utf-8"))
 
@@ -2196,40 +2694,89 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json(list(set(ids)))  # 去重
         except subprocess.TimeoutExpired:
             return self._json([])
-        except Exception:
-            return self._json([])
+        except (OSError, ValueError) as e:
+            return self._json({"error": str(e)})
 
-    def _cors(self):
-        """设置 CORS 头，允许前端跨域访问"""
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, DELETE, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-
-    def _new_session(self):
-        """通过 AppleScript 打开新 Terminal 窗口启动全新 Claude Code 会话。"""
-        cwd = os.path.expanduser("~")  # 默认从用户主目录启动
+    @staticmethod
+    def _run_osascript(cwd, claude_args):
+        """通过 AppleScript 在 Terminal 中运行 claude 命令。"""
+        safe_cwd = cwd.replace('\\', '\\\\').replace('"', '\\"')
+        if claude_args:
+            safe_args = claude_args.replace('\\', '\\\\').replace('"', '\\"')
+        else:
+            safe_args = ""
         script = f'''
             tell application "Terminal"
-                do script "cd {cwd} && claude"
+                do script "cd \\"{safe_cwd}\\" && claude {safe_args}"
                 activate
             end tell
         '''
+        subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
+
+    def _new_session(self):
+        """通过 AppleScript 打开新 Terminal 窗口启动全新 Claude Code 会话。"""
         try:
-            subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
+            self._run_osascript(os.path.expanduser("~"), "")
             return self._json({"success": True, "message": "Starting new session"})
         except subprocess.CalledProcessError as e:
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
 
+    def _restart_server(self):
+        """重启 S.T.O.A. 服务：先关闭监听 socket 释放端口，再启动新进程，然后退出。"""
+        script_path = os.path.realpath(__file__)
+        env = os.environ.copy()
+        env["CSM_NO_BROWSER"] = "1"
+        # 先响应客户端，再处理重启
+        self._json({"success": True, "message": "Restarting..."})
+        self.wfile.flush()
+        started = False
+        try:
+            self.server.server_close()
+            with open("/tmp/claude-session-manager.log", "a") as log_file:
+                subprocess.Popen(
+                    [sys.executable, script_path],
+                    stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file,
+                    start_new_session=True, env=env, close_fds=True
+                )
+            started = True
+        finally:
+            if started:
+                os._exit(0)
+
+    def _kill_pid(self, pid, poll_exit=False):
+        """发送 kill 信号并可选轮询确认退出。返回 (success, message)。"""
+        try:
+            result = subprocess.run(["kill", str(pid)], capture_output=True, timeout=3)
+        except subprocess.TimeoutExpired:
+            return False, "Process did not respond — try again"
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            return False, str(e)
+        # kill 返回非零时检查是否为「进程不存在」
+        if result.returncode != 0:
+            if b"No such process" in result.stderr:
+                return True, "Already stopped"
+            return False, result.stderr.decode().strip() or "Failed to stop"
+        # 轮询确认进程退出
+        if poll_exit:
+            deadline = time.time() + 3
+            while time.time() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.1)
+            else:
+                return False, "Process did not exit — try stop first"
+        return True, "Stopped"
+
     def _restart_session(self, session_id):
-        """重启会话：先发送 kill 信号终止进程，等待 1 秒后再通过 AppleScript 恢复。"""
-        SessionManager._get_active_session_ids()  # 刷新 PID 缓存
+        """重启会话：先发送 kill 信号终止进程，确认退出后再恢复。"""
+        SessionManager._get_active_session_ids()
         pid = SessionManager._session_pid_cache.get(session_id)
         if pid:
-            try:
-                subprocess.run(["kill", str(pid)], capture_output=True, timeout=3)
-            except Exception:
-                pass
-        time.sleep(1)  # 等待进程完全退出
+            ok, msg = self._kill_pid(pid, poll_exit=True)
+            if not ok:
+                return self._json({"success": False, "message": msg})
         return self._resume_session(session_id)
 
     def _resume_session(self, session_id):
@@ -2238,46 +2785,32 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         if not filepath:
             return self._error(404, f"Session not found: {session_id}")
 
-        # 从项目目录名反推工作目录（而非依赖 JSONL 中最后记录的 cwd）
-        import re
-        proj_dir = Path(filepath).parent.name  # 例如 "-Users-zhanghaotian"
-        # 反向解码：-Users-zhanghaotian → /Users/zhanghaotian
-        cwd = "/" + proj_dir.lstrip("-").replace("-", "/")
+        proj_dir = Path(filepath).parent.name
+        decoded = SessionManager._decode_project(proj_dir)
+        cwd = os.path.expanduser(decoded)
         if not os.path.isdir(cwd):
-            cwd = os.path.expanduser("~")  # 目录不存在时回退到主目录
+            cwd = os.path.expanduser("~")
 
-        # 构建 AppleScript 在 Terminal 中打开 claude --resume
-        script = f'''
-            tell application "Terminal"
-                do script "cd {cwd} && claude --resume {session_id}"
-                activate
-            end tell
-        '''
         try:
-            subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
+            self._run_osascript(cwd, f"--resume {session_id}")
             return self._json({"success": True, "message": f"Resuming session {session_id}"})
         except subprocess.CalledProcessError as e:
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
 
     def _stop_session(self, session_id):
-        """通过 Claude 的 PID 映射精确 kill 对应会话的进程。
-        不会删除会话文件，用户可以稍后继续。"""
-        SessionManager._get_active_session_ids()  # 确保 PID 缓存是最新的
+        """通过 Claude 的 PID 映射精确 kill 对应会话的进程。"""
+        SessionManager._get_active_session_ids()
         pid = SessionManager._session_pid_cache.get(session_id)
         if not pid:
             return self._json({"success": False, "message": "No matching process found"})
-        try:
-            subprocess.run(["kill", str(pid)], capture_output=True, timeout=3)
-            return self._json({"success": True, "message": "Process terminated"})
-        except Exception as e:
-            return self._json({"success": False, "message": str(e)})
+        ok, msg = self._kill_pid(pid)
+        return self._json({"success": ok, "message": msg})
 
-            return self._json({"success": True, "message": "Stopped"})
-        except Exception as e:
-            return self._json({"success": False, "message": str(e)})
 
     def _find_session_path(self, session_id):
         """根据会话 ID 查找对应的 JSONL 文件路径。"""
+        if not self._validate_session_id(session_id):
+            return None
         for f in Path(CLAUDE_PROJECTS_DIR).glob(f"*/{session_id}.jsonl"):
             return str(f)
         return None
@@ -2305,6 +2838,7 @@ def main():
     print()
 
     # 创建 HTTP 服务器，监听 127.0.0.1:8742
+    http.server.HTTPServer.allow_reuse_address = True
     server = http.server.HTTPServer((HOST, PORT), RequestHandler)
     url = f"http://localhost:{PORT}"
 
