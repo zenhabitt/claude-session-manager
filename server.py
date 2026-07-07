@@ -35,6 +35,7 @@ from pathlib import Path
 # Claude 会话数据存储在 ~/.claude/projects/ 下，按项目目录组织
 # 每个会话是一个 .jsonl 文件，每行一条 JSON 记录
 
+VERSION = "v2.1.0"
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")  # Claude 会话数据目录
 TRASH_DIR = os.path.expanduser("~/.claude/session-manager/trash")  # 回收站目录
 PORT = 8742  # HTTP 服务端口
@@ -1301,6 +1302,8 @@ FRONTEND = r"""<!DOCTYPE html>
         <button type="button" onclick="restartServer();toggleSettings()"><span data-i18n="restartBtn">Restart S.T.O.A.</span></button>
         <div class="settings-sep"></div>
         <div class="settings-info"><div>Server up since</div><div id="server-started-at">—</div></div>
+        <div class="settings-sep"></div>
+        <div class="settings-info" style="padding-top:0">%%VERSION%%</div>
       </div>
     </div>
   </div>
@@ -2651,7 +2654,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Pragma", "no-cache")
         self.send_header("Expires", "0")
         self.end_headers()
-        self.wfile.write(FRONTEND.encode("utf-8"))
+        self.wfile.write(FRONTEND.replace("%%VERSION%%", VERSION).encode("utf-8"))
 
     def _json(self, data):
         """返回 JSON 格式响应"""
