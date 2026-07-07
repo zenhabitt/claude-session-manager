@@ -19,9 +19,12 @@ Usage:
 import http.server
 import json
 import os
+import shlex
+import socket
 import sys
 import webbrowser
 import urllib.parse
+import urllib.request
 import threading
 import shutil
 import time
@@ -35,12 +38,80 @@ from pathlib import Path
 # Claude 会话数据存储在 ~/.claude/projects/ 下，按项目目录组织
 # 每个会话是一个 .jsonl 文件，每行一条 JSON 记录
 
-VERSION = "v2.1.0"
+VERSION = "v2.2.0"
+MIN_ROLLBACK_VERSION = "v2.2.0"  # 禁止回退到低于此版本的 release（没有自动更新系统）
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")  # Claude 会话数据目录
 TRASH_DIR = os.path.expanduser("~/.claude/session-manager/trash")  # 回收站目录
+CONFIG_DIR = os.path.expanduser("~/.claude/session-manager")  # 配置目录
+CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")  # 配置文件路径
 PORT = 8742  # HTTP 服务端口
 HOST = "127.0.0.1"  # 仅监听本地，不对外暴露
 SERVER_STARTED_AT = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # 服务启动时间戳
+
+# ── 更新检查缓存 ──────────────────────────────────────────────────────
+_update_check_cache = None  # 启动时自动检查结果缓存，None 表示尚未检查
+
+
+def _parse_version(v):
+    """将 'v2.1.0' 或 '2.1.0' 解析为整数元组。
+    剥离预发布后缀。解析失败返回 None。"""
+    v = v.lstrip("v")
+    v = re.split(r'[-+]', v)[0]  # 剥离预发布后缀：v2.1.0-beta.1 → 2.1.0
+    try:
+        parts = tuple(int(x) for x in v.split("."))
+        return parts if len(parts) >= 2 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _compare_versions(v1, v2):
+    """比较两个版本号字符串。逐段比较，缺失段视为 0。
+    返回 -1 (v1<v2), 0 (相等), 1 (v1>v2), 或 None (无法比较)。"""
+    p1, p2 = _parse_version(v1), _parse_version(v2)
+    if p1 is None or p2 is None:
+        return None
+    max_len = max(len(p1), len(p2))
+    for i in range(max_len):
+        a = p1[i] if i < len(p1) else 0
+        b = p2[i] if i < len(p2) else 0
+        if a < b:
+            return -1
+        if a > b:
+            return 1
+    return 0
+
+
+def _get_app_path():
+    """从 __file__ 向上找到 .app bundle 路径。如果不是从 .app 内运行则返回 None。"""
+    p = Path(__file__).resolve()
+    # 结构: <app>/Contents/Resources/server.py
+    if p.parent.name == "Resources" and p.parent.parent.name == "Contents":
+        app = p.parent.parent.parent
+        if app.name.endswith(".app") and app.is_dir():
+            return str(app)
+    return None
+
+
+def _github_api(path_suffix):
+    """统一的 GitHub API 调用（模块级，前后台共用）。
+    path_suffix 如 '/releases/latest' 或 '/releases?per_page=100'。
+    返回 (data, error_message)。"""
+    url = "https://api.github.com/repos/zenhabitt/claude-session-manager" + path_suffix
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "S.T.O.A.-Update-Check/1.0", "Accept": "application/vnd.github+json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return (json.loads(resp.read().decode("utf-8")), None)
+    except json.JSONDecodeError as e:
+        return (None, f"Parse error: {e}")
+    except (urllib.request.URLError, ValueError, OSError) as e:
+        return (None, f"Network error: {e}")
+
+
+# ── 回退信息缓存（模块级，跨请求共享） ─────────────────────────
+_rollback_info_cache = None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -636,6 +707,26 @@ class SessionManager:
         """验证 session_id 是否为合法 UUID 格式，防止 glob 注入。"""
         return bool(cls._SESSION_ID_RE.match(session_id))
 
+    # ── 配置读写 ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _read_config():
+        """读取配置文件，返回 dict。文件不存在时返回默认配置。"""
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError, ValueError):
+            return {"auto_check_updates": True, "last_check_time": None}
+
+    @staticmethod
+    def _write_config(config):
+        """写入配置文件。自动创建父目录。"""
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, CONFIG_FILE)
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  前端 — 国际化字符串
@@ -734,6 +825,20 @@ I18N = {
         "searchContent": "搜索会话内容",
         "searchContentFound": "找到 {n} 个匹配会话",
         "searchContentNone": "未找到匹配的对话内容",
+        "checkUpdateBtn": "检查更新",
+        "autoCheckLabel": "自动检查更新",
+        "updateAvailable": "发现新版本",
+        "updateMsg": "发现新版本 <b>{version}</b>，当前版本 <b>{current}</b>。要下载并更新吗？",
+        "updateAndRestart": "更新并重启",
+        "upToDate": "已是最新版本",
+        "checkFailed": "检查更新失败",
+        "downloading": "正在下载更新…",
+        "updateFailed": "更新失败",
+        "advancedSettings": "高级设置",
+        "rollbackBtn": "回退到",
+        "rollbackConfirmTitle": "确认版本回退",
+        "rollbackConfirmMsg": "将回退到 <b>{version}</b>，当前版本将被替换。要继续吗？",
+        "noRollback": "没有可回退的版本",
     },
     "en": {
         "appTitle": "S.T.O.A.",
@@ -827,6 +932,20 @@ I18N = {
         "searchContent": "Search in messages",
         "searchContentFound": "{n} sessions found",
         "searchContentNone": "No matches in messages",
+        "checkUpdateBtn": "Check for Updates",
+        "autoCheckLabel": "Auto-check updates",
+        "updateAvailable": "New Version Available",
+        "updateMsg": "New version <b>{version}</b> available (current: <b>{current}</b>). Download and update?",
+        "updateAndRestart": "Update & Restart",
+        "upToDate": "Up to date",
+        "checkFailed": "Update check failed",
+        "downloading": "Downloading update…",
+        "updateFailed": "Update failed",
+        "advancedSettings": "Advanced",
+        "rollbackBtn": "Rollback to",
+        "rollbackConfirmTitle": "Confirm Rollback",
+        "rollbackConfirmMsg": "This will rollback to <b>{version}</b>, replacing the current version. Continue?",
+        "noRollback": "No version to rollback to",
     },
 }
 
@@ -921,6 +1040,15 @@ FRONTEND = r"""<!DOCTYPE html>
   .settings-menu button:hover { background: var(--surface2); }
   .settings-sep { height: 1px; background: var(--border); margin: 4px 8px; }
   .settings-info { padding: 4px 12px; font-size: 10px; color: var(--text-dim); }
+  .settings-toggle { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; font-size: 12px; color: var(--text); cursor: pointer; font-family: var(--font); }
+  .settings-toggle input[type="checkbox"] { accent-color: var(--accent); }
+  .settings-menu button:disabled,
+  .settings-menu button.btn-disabled { opacity: .35; cursor: pointer; }
+  .settings-update-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #FD151B; margin-left: 4px; vertical-align: middle; }
+  .settings-advanced-group { display: none; }
+  .settings-advanced-group.open { display: block; }
+  .settings-advanced-group .settings-toggle,
+  .settings-advanced-group button { padding-left: 24px; }
 
   /* ── Main Layout ── */
   .main { display: flex; flex: 1; overflow: hidden; }
@@ -1300,6 +1428,20 @@ FRONTEND = r"""<!DOCTYPE html>
         <button type="button" onclick="toggleTheme();toggleSettings()"><span data-i18n="themeLabel">Theme</span></button>
         <button type="button" onclick="toggleLang();toggleSettings()"><span data-i18n="langLabel">Language</span></button>
         <button type="button" onclick="restartServer();toggleSettings()"><span data-i18n="restartBtn">Restart S.T.O.A.</span></button>
+        <button type="button" onclick="checkUpdate();toggleSettings()"><span data-i18n="checkUpdateBtn">Check for Updates</span></button>
+        <div class="settings-sep"></div>
+        <button type="button" id="advanced-toggle-btn" onclick="toggleAdvancedMenu()">
+          <span data-i18n="advancedSettings">Advanced</span>
+        </button>
+        <div class="settings-advanced-group" id="advanced-group">
+          <label class="settings-toggle">
+            <span data-i18n="autoCheckLabel">Auto-check updates</span>
+            <input type="checkbox" id="auto-check-toggle" onchange="toggleAutoCheck(this.checked)">
+          </label>
+          <button type="button" id="rollback-btn" onclick="rollbackVersion();toggleSettings()" class="btn-disabled">
+            <span data-i18n="rollbackBtn">Rollback to</span> <span id="rollback-ver">—</span>
+          </button>
+        </div>
         <div class="settings-sep"></div>
         <div class="settings-info"><div>Server up since</div><div id="server-started-at">—</div></div>
         <div class="settings-sep"></div>
@@ -1445,6 +1587,9 @@ function toggleTheme() {
 function toggleSettings() {
   document.getElementById('settings-menu').classList.toggle('show');
 }
+function toggleAdvancedMenu() {
+  document.getElementById('advanced-group').classList.toggle('open');
+}
 document.addEventListener('click', e => {
   const wrap = document.getElementById('settings-wrap');
   if (wrap && !wrap.contains(e.target)) {
@@ -1481,8 +1626,13 @@ let currentDetailType = null;
 // ═══════════════════════════════════════════════════════════════════
 //  API
 // ═══════════════════════════════════════════════════════════════════
-async function api(path, method = 'GET') {
-  const res = await fetch(path, { method, cache: 'no-store' });
+async function api(path, method = 'GET', body) {
+  const opts = { method, cache: 'no-store' };
+  if (body !== undefined) {
+    opts.headers = {'Content-Type': 'application/json'};
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
   return res.json();
 }
 
@@ -1519,6 +1669,7 @@ async function init() {
   loadDashboard();
   updateTrashBadge();
   loadServerTime();
+  initSettings();
   applyLang();
   moveTabIndicator('dashboard');
 
@@ -1623,7 +1774,7 @@ function renderDashboard() {
         dotClass: dotClass,
         title: a.title,
         dataId: a.id,
-        onClick: `switchTab('list',true);selectedId='${a.id}';currentDetailType='session';reloadData().then(()=>{renderList();selectSession('${a.id}');})`,
+        onClick: `switchTab('list',true);selectedId='${jsesc(a.id)}';currentDetailType='session';reloadData().then(()=>{renderList();selectSession('${jsesc(a.id)}');})`,
         metaTags: [
           { cls: 'project', text: a.model },
           { style: statusColor, text: statusLabel },
@@ -1649,7 +1800,7 @@ function renderDashboard() {
         dotStyle: rdotStyle,
         title: r.title,
         dataId: r.id,
-        onClick: `switchTab('list',true);selectedId='${r.id}';currentDetailType='session';reloadData().then(()=>{renderList();selectSession('${r.id}');})`,
+        onClick: `switchTab('list',true);selectedId='${jsesc(r.id)}';currentDetailType='session';reloadData().then(()=>{renderList();selectSession('${jsesc(r.id)}');})`,
         metaTags: [
           { cls: 'project', text: r.model },
           { cls: 'date', text: r.last_time },
@@ -1702,6 +1853,94 @@ function hardReload() {
 async function restartServer() {
   try { await api('/api/restart', 'POST'); } catch(e) { /* expected */ }
   setTimeout(() => { hardReload(); }, 1500);
+}
+
+// ── 更新系统 ──
+
+async function checkUpdate() {
+  try {
+    const res = await api('/api/check-update?force=1');
+    if (res.has_update && res.download_url) {
+      const msg = t('updateMsg').replace('{version}', esc(res.latest_version || '')).replace('{current}', esc(res.current_version || ''));
+      showModal(t('updateAvailable'), msg, t('updateAndRestart'), 'danger', () => {
+        closeModal();
+        doUpdate(res.download_url);
+      });
+    } else {
+      toast(t('upToDate'), 'success');
+    }
+  } catch(e) {
+    toast(t('checkFailed'), 'error');
+  }
+}
+
+async function doUpdate(downloadUrl) {
+  toast(t('downloading'), 'info');
+  try {
+    const res = await api('/api/update-and-restart', 'POST', {download_url: downloadUrl});
+    if (res.success) {
+      setTimeout(() => { hardReload(); }, 2000);
+    } else {
+      toast(res.message || t('updateFailed'), 'error');
+    }
+  } catch(e) {
+    setTimeout(() => { hardReload(); }, 2000);
+  }
+}
+
+async function rollbackVersion() {
+  const ver = document.getElementById('rollback-ver').textContent;
+  if (!ver || ver === '—') {
+    toast(t('noRollback'), 'info');
+    return;
+  }
+  const msg = t('rollbackConfirmMsg').replace('{version}', esc(ver));
+  showModal(t('rollbackConfirmTitle'), msg, t('rollbackBtn'), 'danger', async () => {
+    closeModal();
+    try {
+      const res = await api('/api/rollback', 'POST');
+      if (res.success) {
+        setTimeout(() => { hardReload(); }, 2000);
+      } else {
+        toast(res.message || t('updateFailed'), 'error');
+      }
+    } catch(e) {
+      setTimeout(() => { hardReload(); }, 2000);
+    }
+  });
+}
+
+async function toggleAutoCheck(enabled) {
+  try {
+    await api('/api/config', 'POST', {auto_check_updates: enabled});
+  } catch(e) { /* ignore */ }
+}
+
+async function initSettings() {
+  // 三个独立请求并行加载
+  const [config, rollbackInfo, updateCache] = await Promise.allSettled([
+    api('/api/config'),
+    api('/api/rollback-available'),
+    api('/api/check-update'),
+  ]);
+
+  if (config.status === 'fulfilled') {
+    document.getElementById('auto-check-toggle').checked = !!config.value.auto_check_updates;
+  }
+
+  if (rollbackInfo.status === 'fulfilled' && rollbackInfo.value.available) {
+    document.getElementById('rollback-btn').classList.remove('btn-disabled');
+    document.getElementById('rollback-ver').textContent = rollbackInfo.value.version;
+  }
+
+  if (updateCache.status === 'fulfilled' && updateCache.value.has_update) {
+    const btn = document.querySelector('[data-i18n="settingsBtn"]');
+    if (btn && !btn.querySelector('.settings-update-dot')) {
+      const dot = document.createElement('span');
+      dot.className = 'settings-update-dot';
+      btn.appendChild(dot);
+    }
+  }
 }
 
 async function refreshData() {
@@ -1778,7 +2017,8 @@ async function contentSearch() {
 
   const t0 = Date.now();
   try {
-    contentMatchIds = await api(`/api/sessions/search?q=${encodeURIComponent(query)}`);
+    const result = await api(`/api/sessions/search?q=${encodeURIComponent(query)}`);
+    contentMatchIds = Array.isArray(result) ? result : [];
   } catch {
     contentMatchIds = [];
   }
@@ -1866,14 +2106,14 @@ function renderList() {
       dotClass: s.status || '',
       title: s.title,
       dataId: s.id,
-      onClick: `selectSession('${s.id}')`,
+      onClick: `selectSession('${jsesc(s.id)}')`,
       metaTags: [
         { cls: 'date', text: s.date },
         { cls: 'msgs', text: s.messages + ' msgs' },
         { cls: 'size', text: s.size },
         { cls: 'project', text: s.project },
       ],
-      actionsHtml: `<button type="button" class="card-btn danger" onclick="event.stopPropagation(); ${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>`
+      actionsHtml: `<button type="button" class="card-btn danger" onclick="event.stopPropagation(); ${s.active ? `askStopSession('${jsesc(s.id)}')` : `askDeleteSession('${jsesc(s.id)}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>`
     });
 
     let html = '';
@@ -1908,14 +2148,14 @@ function renderList() {
         extraClasses: item.id === selectedId ? ' selected' : '',
         title: item.title,
         dataId: item.id,
-        onClick: `selectTrashItem('${item.id}')`,
+        onClick: `selectTrashItem('${jsesc(item.id)}')`,
         metaTags: [
           { cls: 'date', text: item.date },
           { cls: 'msgs', text: item.messages + ' msgs' },
           { cls: 'size', text: item.size },
           { style: 'background:rgba(240,160,48,0.15);color:#f0a030', text: t('deletedAt') + ': ' + item.deleted_at },
         ],
-        actionsHtml: `<button type="button" class="card-btn restore" onclick="event.stopPropagation(); askRestore('${item.id}')">&#8634; ${t('restore')}</button><button type="button" class="card-btn danger" onclick="event.stopPropagation(); askPermDelete('${item.id}')">&#x2715; ${t('permDelete')}</button>`
+        actionsHtml: `<button type="button" class="card-btn restore" onclick="event.stopPropagation(); askRestore('${jsesc(item.id)}')">&#8634; ${t('restore')}</button><button type="button" class="card-btn danger" onclick="event.stopPropagation(); askPermDelete('${jsesc(item.id)}')">&#x2715; ${t('permDelete')}</button>`
       })).join('');
     }
   }
@@ -1925,6 +2165,11 @@ function esc(str) {
   const div = document.createElement('div');
   div.textContent = str || '';
   return div.innerHTML;
+}
+
+function jsesc(str) {
+  // 转义 JS 字符串内的特殊字符（用于 onclick 等 JS 上下文）
+  return (str || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '\\"');
 }
 
 // Check if a message has any text-type part (actual conversation)
@@ -2087,9 +2332,9 @@ async function selectSession(id) {
           </details>
           <div class="detail-actions">
             <button type="button" class="btn" id="toggle-non-dialogue-btn" onclick="toggleNonDialogue()" style="color:var(--text-dim);border-color:var(--border)">${t('showNonDialogue')}</button>
-            ${s.active ? `<button type="button" class="btn" onclick="askRestartSession('${s.id}')" style="color:var(--warn);border-color:var(--warn)">&#8635; ${t('restart')}</button>` : ''}
-            ${s.active ? '' : `<button type="button" class="btn" onclick="resumeSession('${s.id}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
-            <button type="button" class="btn btn-danger" id="detail-delete-btn" onclick="${s.active ? `askStopSession('${s.id}')` : `askDeleteSession('${s.id}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
+            ${s.active ? `<button type="button" class="btn" onclick="askRestartSession('${jsesc(s.id)}')" style="color:var(--warn);border-color:var(--warn)">&#8635; ${t('restart')}</button>` : ''}
+            ${s.active ? '' : `<button type="button" class="btn" onclick="resumeSession('${jsesc(s.id)}')" style="color:var(--accent);border-color:var(--accent)">&#9654; ${t('resume')}</button>`}
+            <button type="button" class="btn btn-danger" id="detail-delete-btn" onclick="${s.active ? `askStopSession('${jsesc(s.id)}')` : `askDeleteSession('${jsesc(s.id)}')`}">&#x2715; ${s.active ? t('stop') : t('delete')}</button>
           </div>
         </div>
       </div>
@@ -2549,6 +2794,16 @@ bindCardTilt(document.getElementById('dashboard-panel'));
 #  HTTP 服务器 — 纯 Python 标准库实现，路由分发与 API 处理
 # ═══════════════════════════════════════════════════════════════════════
 
+class _ValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """HTTP 重定向处理器：验证每次重定向目标是否为可信域名。"""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not RequestHandler._validate_download_url(newurl, strict=False):
+            raise urllib.request.HTTPError(req.full_url, code,
+                                           "Redirect to untrusted domain", headers, fp)
+        return urllib.request.HTTPRedirectHandler.redirect_request(
+            self, req, fp, code, msg, headers, newurl)
+
+
 class RequestHandler(http.server.BaseHTTPRequestHandler):
     """HTTP 请求处理器：RESTful API 路由 + 静态前端页面"""
 
@@ -2587,6 +2842,15 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._json(SessionManager.list_trash())
         elif path == "/api/status":
             return self._json({"status": "ok", "started_at": SERVER_STARTED_AT})
+        elif path == "/api/check-update":
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            force = params.get("force", ["0"])[0] == "1"
+            return self._check_update(force=force)
+        elif path == "/api/config":
+            return self._get_config()
+        elif path == "/api/rollback-available":
+            return self._rollback_available()
         else:
             return self._error(404, "Not found")
 
@@ -2636,6 +2900,12 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return self._new_session()
         elif path == "/api/restart":
             return self._restart_server()
+        elif path == "/api/update-and-restart":
+            return self._update_and_restart()
+        elif path == "/api/rollback":
+            return self._rollback()
+        elif path == "/api/config":
+            return self._set_config()
         else:
             return self._error(404, "Not found")
 
@@ -2671,6 +2941,17 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"error": msg}).encode("utf-8"))
 
+    def _read_body(self):
+        """读取 POST 请求 body 并解析为 JSON。解析失败返回 None。"""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length == 0:
+                return {}
+            raw = self.rfile.read(length)
+            return json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, ValueError, OSError):
+            return None
+
     def _search_content(self, query):
         """使用 grep 在所有会话 JSONL 文件中全文搜索关键词。
         返回包含匹配文本的会话 ID 列表。
@@ -2685,7 +2966,9 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
                 # -r: 递归    -I: 忽略二进制    -l: 只输出文件名    -F: 固定字符串（非正则）
                 capture_output=True, text=True, timeout=10
             )
-            if result.returncode not in (0, 1):  # 0=找到匹配, 1=未找到
+            if result.returncode == 2:  # grep 错误（目录不存在、权限拒绝等）
+                return self._json({"error": result.stderr.strip()})
+            if result.returncode == 1:  # 未找到匹配
                 return self._json([])
             # 从文件路径中提取会话 ID（UUID 格式，36 字符）
             ids = []
@@ -2702,15 +2985,16 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     @staticmethod
     def _run_osascript(cwd, claude_args):
-        """通过 AppleScript 在 Terminal 中运行 claude 命令。"""
-        safe_cwd = cwd.replace('\\', '\\\\').replace('"', '\\"')
+        """通过 AppleScript 在 Terminal 中运行 claude 命令。
+        使用 shlex 防止 shell 元字符注入，同时保证多词参数正确拆分。"""
+        safe_cwd = shlex.quote(cwd)
         if claude_args:
-            safe_args = claude_args.replace('\\', '\\\\').replace('"', '\\"')
+            safe_args = ' '.join(shlex.quote(a) for a in shlex.split(claude_args))
         else:
             safe_args = ""
         script = f'''
             tell application "Terminal"
-                do script "cd \\"{safe_cwd}\\" && claude {safe_args}"
+                do script "cd {safe_cwd} && claude {safe_args}"
                 activate
             end tell
         '''
@@ -2724,27 +3008,324 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
         except subprocess.CalledProcessError as e:
             return self._json({"success": False, "message": f"Failed to launch: {e.stderr.strip()}"})
 
-    def _restart_server(self):
-        """重启 S.T.O.A. 服务：先关闭监听 socket 释放端口，再启动新进程，然后退出。"""
+    # ── 更新系统 ──────────────────────────────────────────────────
+
+    _update_lock = threading.Lock()  # 保护 _update_check_cache 和 config 并发读写
+
+    # GitHub CDN 域名（release asset 下载时会 302 重定向到这些主机）
+    _GITHUB_CDN_HOSTS = {"objects.githubusercontent.com", "github-releases.githubusercontent.com"}
+
+    @staticmethod
+    def _validate_download_url(url, strict=True):
+        """校验下载 URL 是否指向合法的 GitHub release asset。
+        strict=True 时只允许 github.com（用于用户提交的 URL 初始校验）；
+        strict=False 时也允许 GitHub CDN 域名（用于重定向目标校验）。"""
+        if not url:
+            return False
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme != "https":
+            return False
+        if strict:
+            return (parsed.netloc == "github.com" and
+                    parsed.path.startswith("/zenhabitt/claude-session-manager/releases/download/"))
+        else:
+            return (parsed.netloc == "github.com" or
+                    parsed.netloc in RequestHandler._GITHUB_CDN_HOSTS)
+
+
+    def _download_dmg(self, url, dest_path):
+        """分块下载 DMG 文件，带超时。每次重定向都重新验证目标 URL。
+        成功返回 True，失败返回错误信息。"""
+        opener = urllib.request.build_opener(_ValidatingRedirectHandler())
+        try:
+            with opener.open(url, timeout=30) as resp:
+                with open(dest_path, 'wb') as f:
+                    while True:
+                        chunk = resp.read(8192)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            return (True, None)
+        except (OSError, ValueError) as e:
+            return (False, f"Download failed: {e}")
+
+    def _find_previous_release(self, releases):
+        """从 release 列表中找到可回退的上一版本。
+        返回 (tag_name, release_dict, dmg_url) 或 None。"""
+        versions = []
+        for rel in releases:
+            # 跳过预发布版本
+            if rel.get("prerelease"):
+                continue
+            v = _parse_version(rel.get("tag_name", ""))
+            if v:
+                versions.append((v, rel.get("tag_name", ""), rel))
+        if not versions:
+            return None
+
+        current = _parse_version(VERSION)
+        if current is None:
+            return None
+        min_ver = _parse_version(MIN_ROLLBACK_VERSION)
+
+        # 找到低于当前版本、且不低于最低回退版本的最高版本
+        for v, tag, rel in sorted(versions, key=lambda x: x[0], reverse=True):
+            if v < current and (min_ver is None or v >= min_ver):
+                # 找到 DMG 链接
+                for asset in rel.get("assets", []):
+                    if asset.get("name", "").endswith(".dmg"):
+                        return (tag, rel, asset.get("browser_download_url"))
+                # 该版本无 DMG，继续检查更早的版本
+        return None
+
+    def _install_dmg_and_restart(self, dmg_path, action_name="Update"):
+        """挂载 DMG → 原子替换 .app → 卸载 → 重启。"""
+        app_path = _get_app_path()
+        if not app_path:
+            return self._json({"success": False, "message": "Not running from .app bundle — operation not supported"})
+
+        # 1. 挂载 DMG（使用 -mountpoint 精确控制挂载位置）
+        mount_point = "/tmp/stoa-mount"
+        try:
+            os.makedirs(mount_point, exist_ok=True)
+            result = subprocess.run(
+                ["hdiutil", "attach", dmg_path, "-nobrowse", "-readonly",
+                 "-mountpoint", mount_point],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode != 0:
+                raise OSError(result.stderr.strip())
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return self._json({"success": False, "message": f"Mount failed: {e}"})
+
+        new_app = os.path.join(mount_point, "S.T.O.A..app")
+        tmp_app = app_path + ".new"
+
+        install_ok = False
+        try:
+            # 2. 先拷贝新 .app 到临时路径（不删除旧版本）
+            subprocess.run(["ditto", new_app, tmp_app], check=True, timeout=30)
+            # 3. 原子替换：用 rename 交换新旧 .app
+            old_tmp = app_path + ".old"
+            if os.path.exists(old_tmp):
+                subprocess.run(["rm", "-rf", old_tmp], check=True, timeout=10)
+            os.rename(app_path, old_tmp)
+            os.rename(tmp_app, app_path)
+            # 4. 清理旧版本
+            subprocess.run(["rm", "-rf", old_tmp], check=True, timeout=10)
+            install_ok = True
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError) as e:
+            # 安装失败：如果旧 .app 被移走了但新 .app 没到位，恢复旧版本
+            if not os.path.exists(app_path):
+                old_tmp = app_path + ".old"
+                if os.path.exists(old_tmp):
+                    try:
+                        os.rename(old_tmp, app_path)
+                    except OSError:
+                        pass
+                elif os.path.exists(tmp_app):
+                    try:
+                        os.rename(tmp_app, app_path)
+                    except OSError:
+                        pass
+            return self._json({"success": False, "message": f"Install failed: {e}"})
+        finally:
+            # 清理临时文件
+            if not install_ok:
+                for p in [tmp_app, app_path + ".old"]:
+                    if os.path.exists(p):
+                        try:
+                            subprocess.run(["rm", "-rf", p], timeout=10)
+                        except (subprocess.TimeoutExpired, OSError):
+                            pass
+            # 卸载 DMG
+            try:
+                subprocess.run(["hdiutil", "detach", mount_point], capture_output=True, timeout=10)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            # 清理 DMG 和临时挂载点
+            try:
+                os.remove(dmg_path)
+            except OSError:
+                pass
+            try:
+                os.rmdir(mount_point)
+            except OSError:
+                pass
+
+        # 5. 重启服务（先启动新进程，成功后才关闭旧 socket）
+        self._json({"success": True, "message": f"{action_name} complete, restarting..."})
+        self.wfile.flush()
+        self._restart_self()
+
+    def _restart_self(self):
+        """先尝试启动新进程，成功后才关闭当前 socket 并退出。"""
         script_path = os.path.realpath(__file__)
         env = os.environ.copy()
         env["CSM_NO_BROWSER"] = "1"
-        # 先响应客户端，再处理重启
-        self._json({"success": True, "message": "Restarting..."})
-        self.wfile.flush()
-        started = False
+        # 先启动新进程
         try:
-            self.server.server_close()
             with open("/tmp/claude-session-manager.log", "a") as log_file:
-                subprocess.Popen(
+                new_proc = subprocess.Popen(
                     [sys.executable, script_path],
                     stdin=subprocess.DEVNULL, stdout=log_file, stderr=log_file,
                     start_new_session=True, env=env, close_fds=True
                 )
-            started = True
-        finally:
-            if started:
-                os._exit(0)
+        except (OSError, ValueError):
+            return  # 启动失败，当前进程继续运行
+        # 新进程启动成功，再关闭旧 socket 并退出
+        try:
+            self.server.server_close()
+        except OSError:
+            pass
+        os._exit(0)
+
+    def _check_update(self, force=False):
+        """检查 GitHub Releases 是否有新版本。force=True 时忽略 7 天间隔。"""
+        global _update_check_cache
+        with self._update_lock:
+            config = SessionManager._read_config()
+        now = datetime.datetime.now()
+
+        # 非强制模式下，7 天内不重复检查
+        if not force and config.get("last_check_time"):
+            try:
+                last = datetime.datetime.strptime(config["last_check_time"], "%Y-%m-%d %H:%M:%S")
+                if (now - last).days < 7:
+                    with self._update_lock:
+                        cached = _update_check_cache
+                    if cached is not None:
+                        return self._json(cached)
+                    # 缓存为空（后台检查未执行或失败），继续执行实际检查
+            except (ValueError, TypeError):
+                pass
+
+        result = {"has_update": False, "current_version": VERSION,
+                  "checked_at": now.strftime("%Y-%m-%d %H:%M:%S")}
+
+        release, err = _github_api("/releases/latest")
+        if err:
+            result["error"] = "network_error"
+        elif not release.get("tag_name"):
+            result["error"] = "parse_error"
+        else:
+            latest_tag = release["tag_name"]
+            cmp = _compare_versions(latest_tag, VERSION)
+            if cmp is None:
+                result["error"] = "parse_error"
+            elif cmp > 0:
+                dmg_url = None
+                for asset in release.get("assets", []):
+                    if asset.get("name", "").endswith(".dmg"):
+                        dmg_url = asset.get("browser_download_url")
+                        break
+                # 只在有 DMG 时才报告有更新
+                if dmg_url:
+                    result["has_update"] = True
+                    result["latest_version"] = latest_tag
+                    result["download_url"] = dmg_url
+                    result["release_notes"] = release.get("body", "")
+
+        # 自动检查时更新 last_check_time 并缓存结果（同一锁内，原子操作）
+        if not force:
+            with self._update_lock:
+                config = SessionManager._read_config()
+                config["last_check_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
+                SessionManager._write_config(config)
+                _update_check_cache = result
+        else:
+            with self._update_lock:
+                _update_check_cache = result
+
+        return self._json(result)
+
+    def _update_and_restart(self):
+        """下载最新 DMG、替换 .app、重启服务。"""
+        body = self._read_body()
+        if body is None:
+            return self._error(400, "Invalid request body")
+        download_url = body.get("download_url", "")
+        if not self._validate_download_url(download_url):
+            return self._error(400, "Invalid download URL")
+
+        dmg_path = "/tmp/stoa-update.dmg"
+        ok, err = self._download_dmg(download_url, dmg_path)
+        if not ok:
+            return self._json({"success": False, "message": err})
+
+        return self._install_dmg_and_restart(dmg_path, "Update")
+
+    def _rollback_available(self):
+        """查询是否有可回退的上一个版本。结果缓存在模块级变量中（跨请求共享）。"""
+        global _rollback_info_cache
+        if _rollback_info_cache is not None:
+            return self._json(_rollback_info_cache)
+
+        releases, err = _github_api("/releases?per_page=100")
+        if err:
+            return self._json({"available": False, "error": err})
+
+        prev = self._find_previous_release(releases)
+        with self._update_lock:
+            if prev is None or not prev[2]:
+                _rollback_info_cache = {"available": False}
+            else:
+                _rollback_info_cache = {
+                    "available": True,
+                    "version": prev[0],
+                    "download_url": prev[2],
+                }
+        return self._json(_rollback_info_cache)
+
+    def _rollback(self):
+        """回退到上一个版本：从 GitHub 下载上一个 release 的 DMG 并安装。"""
+        releases, err = _github_api("/releases?per_page=100")
+        if err:
+            return self._json({"success": False, "message": f"Cannot check releases: {err}"})
+
+        prev = self._find_previous_release(releases)
+        if prev is None:
+            return self._json({"success": False, "message": "No previous version available"})
+
+        tag, rel, dmg_url = prev
+        if not dmg_url:
+            return self._json({"success": False, "message": "No DMG found for previous release"})
+
+        if not self._validate_download_url(dmg_url):
+            return self._json({"success": False, "message": "Invalid download URL for previous release"})
+
+        dmg_path = "/tmp/stoa-rollback.dmg"
+        ok, err = self._download_dmg(dmg_url, dmg_path)
+        if not ok:
+            return self._json({"success": False, "message": err})
+
+        return self._install_dmg_and_restart(dmg_path, "Rollback")
+
+    def _get_config(self):
+        """返回当前配置。"""
+        config = SessionManager._read_config()
+        return self._json({
+            "auto_check_updates": config.get("auto_check_updates", True),
+            "last_check_time": config.get("last_check_time"),
+        })
+
+    def _set_config(self):
+        """更新配置。目前只允许修改 auto_check_updates。"""
+        body = self._read_body()
+        if body is None:
+            return self._error(400, "Invalid request body")
+        with self._update_lock:
+            config = SessionManager._read_config()
+            if "auto_check_updates" in body:
+                config["auto_check_updates"] = bool(body["auto_check_updates"])
+            SessionManager._write_config(config)
+        return self._json({"success": True})
+
+    def _restart_server(self):
+        """重启 S.T.O.A. 服务。"""
+        self._json({"success": True, "message": "Restarting..."})
+        self.wfile.flush()
+        self._restart_self()
 
     def _kill_pid(self, pid, poll_exit=False):
         """发送 kill 信号并可选轮询确认退出。返回 (success, message)。"""
@@ -2754,9 +3335,11 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
             return False, "Process did not respond — try again"
         except (OSError, ValueError, subprocess.SubprocessError) as e:
             return False, str(e)
-        # kill 返回非零时检查是否为「进程不存在」
+        # kill 返回非零时，用 os.kill 检测进程是否真的不存在（locale 无关）
         if result.returncode != 0:
-            if b"No such process" in result.stderr:
+            try:
+                os.kill(pid, 0)
+            except OSError:
                 return True, "Already stopped"
             return False, result.stderr.decode().strip() or "Failed to stop"
         # 轮询确认进程退出
@@ -2812,7 +3395,7 @@ class RequestHandler(http.server.BaseHTTPRequestHandler):
 
     def _find_session_path(self, session_id):
         """根据会话 ID 查找对应的 JSONL 文件路径。"""
-        if not self._validate_session_id(session_id):
+        if not SessionManager._validate_session_id(session_id):
             return None
         for f in Path(CLAUDE_PROJECTS_DIR).glob(f"*/{session_id}.jsonl"):
             return str(f)
@@ -2840,9 +3423,64 @@ def main():
     print(f"  Sessions: {len(sessions)}  |  Trash: {trash_count}")
     print()
 
+    # ── 后台自动检查更新 ──
+    def _auto_check_update():
+        """后台线程：如果自动检查已启用且距上次检查超过 7 天，则执行检查。"""
+        global _update_check_cache
+        config = SessionManager._read_config()
+        if not config.get("auto_check_updates", True):
+            return
+        last_str = config.get("last_check_time")
+        if last_str:
+            try:
+                last = datetime.datetime.strptime(last_str, "%Y-%m-%d %H:%M:%S")
+                if (datetime.datetime.now() - last).days < 7:
+                    return
+            except (ValueError, TypeError):
+                pass
+        # 执行检查（使用模块级 _github_api）
+        now = datetime.datetime.now()
+        has_update = False
+        latest_version = None
+        dmg_url = None
+        release_notes = ""
+        release, err = _github_api("/releases/latest")
+        if not err and release:
+            latest_tag = release.get("tag_name", "")
+            if latest_tag:
+                cmp = _compare_versions(latest_tag, VERSION)
+                if cmp is not None and cmp > 0:
+                    for asset in release.get("assets", []):
+                        if asset.get("name", "").endswith(".dmg"):
+                            dmg_url = asset.get("browser_download_url")
+                            has_update = True
+                            latest_version = latest_tag
+                            release_notes = release.get("body", "")
+                            break
+        # 重新读取配置（避免覆盖用户在此期间做的修改），只更新 last_check_time
+        error_msg = err if err else None
+        with RequestHandler._update_lock:
+            _update_check_cache = {
+                "has_update": has_update,
+                "current_version": VERSION,
+                "latest_version": latest_version,
+                "download_url": dmg_url,
+                "release_notes": release_notes,
+                "checked_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "error": error_msg,
+            }
+            config = SessionManager._read_config()
+            if config.get("auto_check_updates", True):
+                config["last_check_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
+                SessionManager._write_config(config)
+
+    threading.Thread(target=_auto_check_update, daemon=True).start()
+
     # 创建 HTTP 服务器，监听 127.0.0.1:8742
+    # allow_reuse_address + SO_REUSEPORT 允许重启时新进程在旧进程退出前绑定端口
     http.server.HTTPServer.allow_reuse_address = True
     server = http.server.HTTPServer((HOST, PORT), RequestHandler)
+    server.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     url = f"http://localhost:{PORT}"
 
     # 自动打开浏览器（.app 启动器模式下通过 CSM_NO_BROWSER 环境变量跳过）
