@@ -38,8 +38,8 @@ from pathlib import Path
 # Claude 会话数据存储在 ~/.claude/projects/ 下，按项目目录组织
 # 每个会话是一个 .jsonl 文件，每行一条 JSON 记录
 
-VERSION = "v2.2.0"
-MIN_ROLLBACK_VERSION = "v2.2.0"  # 禁止回退到低于此版本的 release（没有自动更新系统）
+VERSION = "v2.2.0-beta"
+MIN_ROLLBACK_VERSION = "v2.2.0-beta"  # 禁止回退到低于此版本的 release（没有自动更新系统）
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")  # Claude 会话数据目录
 TRASH_DIR = os.path.expanduser("~/.claude/session-manager/trash")  # 回收站目录
 CONFIG_DIR = os.path.expanduser("~/.claude/session-manager")  # 配置目录
