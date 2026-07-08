@@ -23,9 +23,12 @@ echo ""
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES"
 
-# ── Step 1: Copy server.py ──────────────────────────────────────────
-echo "  [1/5] Copying server.py..."
+# ── Step 1: Copy application code ─────────────────────────────────────
+echo "  [1/5] Copying application code..."
 cp "$SCRIPT_DIR/server.py" "$RESOURCES/server.py"
+for pkg in stoacore stoadata stoaupdate stoaweb; do
+  cp -R "$SCRIPT_DIR/$pkg" "$RESOURCES/$pkg"
+done
 echo "         Done"
 
 # ── Step 2: Generate App Icon ───────────────────────────────────────
